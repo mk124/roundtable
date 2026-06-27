@@ -1,0 +1,10 @@
+# Local docs and planning artifacts (not part of the shipped project)
+docs/
+
+# Dependencies and build output
+node_modules/
+dist/
+
+# Logs and OS noise
+*.log
+.DS_Store

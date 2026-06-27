@@ -1,0 +1,25 @@
+{
+  "name": "roundtable",
+  "version": "0.1.0",
+  "description": "Local passive HTTP roundtable chat for humans and agent clients.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "start": "node src/server/startup.ts",
+    "test": "node --test \"tests/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json",
+    "install-skill": "bash install-skill.sh"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^26.0.1",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "markdown-it": "^14.2.0"
+  }
+}
