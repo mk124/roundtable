@@ -1,5 +1,6 @@
-# Local docs and planning artifacts (not part of the shipped project)
-docs/
+# Local planning artifacts (not part of the shipped project)
+docs/brainstorms/
+docs/plans/
 
 # Dependencies and build output
 node_modules/
