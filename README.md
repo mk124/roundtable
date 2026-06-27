@@ -23,6 +23,10 @@ Roundtable is single-user. It is not a hosted service, team chat product, or age
 
 Requirements: Node.js `>=23.6` and npm.
 
+On macOS, double-click `start.command` — it installs dependencies on first run, starts the server, and opens your browser.
+
+Or run it yourself:
+
 ```bash
 npm install
 npm start
