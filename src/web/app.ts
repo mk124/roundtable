@@ -236,6 +236,7 @@ export class App {
   private view: ViewDTO | null = null;
   private activity: ActivityEntry[] = [];
   private activityHost: HTMLElement | null = null;
+  private jumpToBottomButton: HTMLButtonElement | null = null;
   private activityTimer: number | null = null;
   private sse: 'connected' | 'reconnecting' | 'disconnected' = 'disconnected';
   private sseAbort: AbortController | null = null;
@@ -348,6 +349,7 @@ export class App {
     this.root.setAttribute('aria-busy', 'false');
     this.root.textContent = '';
     this.activityHost = null; // rebuilt by renderChat when a conversation is open
+    this.jumpToBottomButton = null;
     const app = el(this.doc, 'div', 'app');
     app.appendChild(this.renderSidebar());
     app.appendChild(this.renderMain());
@@ -355,7 +357,10 @@ export class App {
     this.renderedConvId = this.conversationId;
 
     const newLog = this.root.querySelector<HTMLElement>('.chat__log');
-    if (newLog) newLog.scrollTop = keepPosition ? prevTop : newLog.scrollHeight;
+    if (newLog) {
+      newLog.scrollTop = keepPosition ? prevTop : newLog.scrollHeight;
+      this.updateJumpToBottom(newLog);
+    }
   }
 
   private renderSidebar(): HTMLElement {
@@ -397,12 +402,14 @@ export class App {
     if (this.sse === 'reconnecting') main.appendChild(el(this.doc, 'div', 'banner banner--info', 'Reconnecting to live updates…'));
 
     const log = el(this.doc, 'div', 'chat__log');
+    log.onscroll = () => this.updateJumpToBottom(log);
     const messages = el(this.doc, 'div', 'chat__messages');
     messages.setAttribute('role', 'log');
     for (const event of view.events) messages.appendChild(this.renderEvent(event));
     log.appendChild(messages);
 
     const dock = el(this.doc, 'div', 'chat__dock');
+    dock.appendChild(this.renderJumpToBottom(log));
     this.activityHost = el(this.doc, 'div', 'activity-host');
     this.activityHost.setAttribute('aria-live', 'polite');
     dock.appendChild(this.activityHost);
@@ -412,6 +419,25 @@ export class App {
     log.appendChild(dock);
     main.appendChild(log);
     return main;
+  }
+
+  private renderJumpToBottom(log: HTMLElement): HTMLButtonElement {
+    const button = el(this.doc, 'button', 'jump-bottom', '↓') as HTMLButtonElement;
+    button.type = 'button';
+    button.hidden = true;
+    button.title = 'Scroll to bottom';
+    button.setAttribute('aria-label', 'Scroll to bottom');
+    button.onclick = () => {
+      log.scrollTop = log.scrollHeight;
+      this.updateJumpToBottom(log);
+    };
+    this.jumpToBottomButton = button;
+    return button;
+  }
+
+  private updateJumpToBottom(log: HTMLElement): void {
+    const button = this.jumpToBottomButton;
+    if (button) button.hidden = atBottom(log);
   }
 
   /** Surgically (re)fill the presence indicator from current state, and keep a

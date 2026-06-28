@@ -257,6 +257,40 @@ textarea {
   background: linear-gradient(to bottom, transparent, var(--bg) 36px);
 }
 
+.jump-bottom {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  box-shadow:
+    0 2px 7px rgba(0, 0, 0, 0.08),
+    0 12px 26px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+  transition:
+    background 0.15s ease,
+    transform 0.05s ease;
+}
+.jump-bottom[hidden] {
+  display: none;
+}
+.jump-bottom:hover {
+  background: var(--surface-2);
+}
+.jump-bottom:active {
+  transform: translate(-50%, -50%) scale(0.94);
+}
+
 /* messages: a uniform-width centred column keeps the reading line comfortable
    without the lopsided right-hand gutter that left-pinned bubbles leave */
 .msg {

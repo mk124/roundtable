@@ -11,9 +11,11 @@ class TestNode {
   className = '';
   clientHeight = 0;
   disabled = false;
+  hidden = false;
   onclick: (() => void) | null = null;
   oninput: (() => void) | null = null;
   onkeydown: ((e: KeyboardEvent) => void) | null = null;
+  onscroll: ((e: Event) => void) | null = null;
   parent: TestNode | null = null;
   placeholder = '';
   rows = 0;
@@ -228,6 +230,35 @@ test('IME composition Enter does not send the composer draft', () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('jump-to-bottom button appears away from the bottom and scrolls back down', () => {
+  const doc = new TestDocument();
+  const app = new App(doc as unknown as Document);
+  const browser = app as unknown as {
+    conversations: unknown[];
+    conversationId: string;
+    render(): void;
+    view: unknown;
+  };
+
+  browser.conversations = [{ id: 'c1', title: 'Chat', readOnly: false }];
+  browser.conversationId = 'c1';
+  browser.view = { cursor: 1, readOnly: false, events: [] };
+  browser.render();
+
+  const log = doc.app.querySelector<TestNode>('.chat__log')!;
+  const button = doc.app.querySelector<TestNode>('.jump-bottom')!;
+  log.scrollHeight = 1000;
+  log.clientHeight = 300;
+  log.scrollTop = 350;
+
+  log.onscroll?.({} as Event);
+  assert.equal(button.hidden, false);
+
+  button.onclick?.();
+  assert.equal(log.scrollTop, 1000);
+  assert.equal(button.hidden, true);
 });
 
 test('agentAccent maps a model family to its bubble accent', () => {
