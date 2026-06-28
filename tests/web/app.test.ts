@@ -186,6 +186,50 @@ test('message refresh preserves an in-progress composer draft', async () => {
   }
 });
 
+test('IME composition Enter does not send the composer draft', () => {
+  const doc = new TestDocument();
+  const app = new App(doc as unknown as Document);
+  const browser = app as unknown as {
+    conversations: unknown[];
+    conversationId: string;
+    render(): void;
+    view: unknown;
+  };
+  const originalFetch = globalThis.fetch;
+  let sent = false;
+  let defaultPrevented = false;
+
+  globalThis.fetch = (async () => {
+    sent = true;
+    return Response.json({ ok: false }, { status: 400 });
+  }) as typeof fetch;
+
+  try {
+    browser.conversations = [{ id: 'c1', title: 'Chat', readOnly: false }];
+    browser.conversationId = 'c1';
+    browser.view = { cursor: 1, readOnly: false, events: [] };
+    browser.render();
+
+    const textarea = doc.app.querySelector<HTMLTextAreaElement>('.composer__input')!;
+    textarea.value = 'ni';
+    textarea.oninput?.({} as InputEvent);
+    textarea.onkeydown?.({
+      altKey: false,
+      isComposing: true,
+      key: 'Enter',
+      preventDefault() {
+        defaultPrevented = true;
+      },
+      shiftKey: false,
+    } as KeyboardEvent);
+
+    assert.equal(sent, false);
+    assert.equal(defaultPrevented, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('agentAccent maps a model family to its bubble accent', () => {
   for (const name of ['Claude Opus 4.8', 'Sonnet 4.6', 'Haiku 4.5', 'Fable 5', 'Mythos']) {
     assert.equal(agentAccent(name), 'claude', name);

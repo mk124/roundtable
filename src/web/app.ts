@@ -503,6 +503,7 @@ export class App {
 
     textarea.onkeydown = (e) => {
       if (e.key !== 'Enter') return;
+      if (e.isComposing) return;
       if (e.altKey) {
         e.preventDefault();
         insertNewline(textarea); // Alt+Enter inserts a newline
