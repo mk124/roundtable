@@ -492,7 +492,7 @@ export class App {
     textarea.rows = 1;
     textarea.setAttribute('aria-label', 'Message');
     textarea.disabled = state.disabled;
-    textarea.placeholder = state.disabled ? (state.reason ?? '') : 'Message the room…';
+    textarea.placeholder = state.disabled ? (state.reason ?? '') : 'Type a message...';
     textarea.value = this.composerDraft;
     textarea.oninput = () => (this.composerDraft = textarea.value);
 

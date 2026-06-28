@@ -343,7 +343,10 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 0 18px 4px;
+  width: calc(100% - 36px);
+  max-width: 800px;
+  margin: 0 auto;
+  padding-bottom: 4px;
 }
 .activity-host:empty {
   display: none;
