@@ -228,7 +228,7 @@ function main(doc: Document): void {
   void new App(doc).start();
 }
 
-class App {
+export class App {
   private readonly api = new Api();
   private conversations: ConversationDTO[] = [];
   private conversationId: string | null = null;
@@ -240,6 +240,7 @@ class App {
   private sse: 'connected' | 'reconnecting' | 'disconnected' = 'disconnected';
   private sseAbort: AbortController | null = null;
   private sendError: string | null = null;
+  private composerDraft = '';
   private readonly root: HTMLElement;
   private readonly live: HTMLElement;
   private readonly doc: Document;
@@ -267,6 +268,7 @@ class App {
 
   private async openConversation(id: string): Promise<void> {
     this.conversationId = id;
+    this.composerDraft = '';
     this.sendError = null;
     this.clearActivity();
     this.sse = 'connected';
@@ -326,6 +328,7 @@ class App {
     this.sseAbort = null;
     this.sse = 'disconnected';
     this.conversationId = null;
+    this.composerDraft = '';
     this.view = null;
     this.clearActivity();
     this.announce('Conversation no longer exists.');
@@ -490,6 +493,8 @@ class App {
     textarea.setAttribute('aria-label', 'Message');
     textarea.disabled = state.disabled;
     textarea.placeholder = state.disabled ? (state.reason ?? '') : 'Message the room…';
+    textarea.value = this.composerDraft;
+    textarea.oninput = () => (this.composerDraft = textarea.value);
 
     const btn = el(this.doc, 'button', 'composer__btn', '↑') as HTMLButtonElement;
     btn.setAttribute('aria-label', 'Send');
@@ -501,6 +506,7 @@ class App {
       if (e.altKey) {
         e.preventDefault();
         insertNewline(textarea); // Alt+Enter inserts a newline
+        this.composerDraft = textarea.value;
       } else if (!e.shiftKey) {
         e.preventDefault(); // Enter sends; Shift+Enter keeps the native newline
         if (!state.disabled) void this.onSend(textarea);
@@ -517,9 +523,11 @@ class App {
 
   private async onSend(textarea: HTMLTextAreaElement): Promise<void> {
     const text = textarea.value;
+    this.composerDraft = text;
     if (!text.trim() || !this.conversationId) return;
     const result = await this.api.say(this.conversationId, text);
     if (result.ok) {
+      this.composerDraft = '';
       this.sendError = null;
       this.announce('Message sent.');
       await this.refresh();
@@ -545,6 +553,7 @@ class App {
     if (this.conversationId === conv.id) {
       this.sseAbort?.abort(); // close the live stream to the now-deleted conversation
       this.conversationId = null;
+      this.composerDraft = '';
       this.view = null;
       this.clearActivity();
     }
