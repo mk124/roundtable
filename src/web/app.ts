@@ -397,16 +397,20 @@ export class App {
     if (this.sse === 'reconnecting') main.appendChild(el(this.doc, 'div', 'banner banner--info', 'Reconnecting to live updates…'));
 
     const log = el(this.doc, 'div', 'chat__log');
-    log.setAttribute('role', 'log');
-    for (const event of view.events) log.appendChild(this.renderEvent(event));
-    main.appendChild(log);
+    const messages = el(this.doc, 'div', 'chat__messages');
+    messages.setAttribute('role', 'log');
+    for (const event of view.events) messages.appendChild(this.renderEvent(event));
+    log.appendChild(messages);
 
+    const dock = el(this.doc, 'div', 'chat__dock');
     this.activityHost = el(this.doc, 'div', 'activity-host');
     this.activityHost.setAttribute('aria-live', 'polite');
-    main.appendChild(this.activityHost);
+    dock.appendChild(this.activityHost);
     this.fillActivity();
 
-    main.appendChild(this.renderComposer(view));
+    dock.appendChild(this.renderComposer(view));
+    log.appendChild(dock);
+    main.appendChild(log);
     return main;
   }
 

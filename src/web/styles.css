@@ -199,6 +199,7 @@ textarea {
   flex-direction: column;
   min-width: 0;
   height: 100vh;
+  overflow: hidden;
 }
 .chat__header {
   display: flex;
@@ -230,12 +231,30 @@ textarea {
 
 .chat__log {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 20px 18px;
+  padding: 0 18px;
+  display: flex;
+  flex-direction: column;
+  scrollbar-gutter: stable;
+}
+
+.chat__messages {
+  padding: 20px 0;
   display: flex;
   flex-direction: column;
   align-items: center; /* messages form one centred column, not a left-pinned block */
   gap: 16px;
+}
+
+.chat__dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  width: 100%;
+  margin-top: auto;
+  padding: 36px 0 18px;
+  background: linear-gradient(to bottom, transparent, var(--bg) 36px);
 }
 
 /* messages: a uniform-width centred column keeps the reading line comfortable
@@ -343,10 +362,10 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  width: calc(100% - 36px);
+  width: 100%;
   max-width: 800px;
   margin: 0 auto;
-  padding-bottom: 4px;
+  padding-bottom: 6px;
 }
 .activity-host:empty {
   display: none;
@@ -395,7 +414,7 @@ textarea {
 /* ── Composer ───────────────────────────────────────────────────────── */
 
 .composer {
-  padding: 8px 18px 18px;
+  padding: 0;
 }
 .composer__box {
   max-width: 800px; /* align the input to the centred message column */
