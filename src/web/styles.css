@@ -300,10 +300,24 @@ textarea {
   flex-direction: column;
   gap: 4px;
 }
-.msg__role {
+.msg__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
-  font-weight: 600;
+  line-height: 1.25;
   color: var(--muted);
+}
+.msg__meta--system {
+  justify-content: center;
+}
+.msg__role {
+  font-weight: 600;
+}
+.msg__time {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.25;
+  white-space: nowrap;
 }
 .msg__body {
   background: var(--surface);

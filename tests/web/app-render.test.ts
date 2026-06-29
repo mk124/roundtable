@@ -1,8 +1,8 @@
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { renderContent } from '../../src/web/render-content.ts';
 import { agentAccent, composerState } from '../../src/web/ui-state.ts';
-import { fakeDoc, render } from './app-test-harness.ts';
+import { fakeDoc, messageEvent, render, renderApp, testView } from './app-test-harness.ts';
 import type { TestNode } from './app-test-harness.ts';
 
 test('text content becomes a text node, never markup (AE13)', () => {
@@ -53,3 +53,87 @@ test('agentAccent maps a model family to its bubble accent', () => {
   assert.equal(agentAccent('user'), null);
   assert.equal(agentAccent(undefined), null);
 });
+
+test('renders today message timestamps as time only', () => {
+  const date = new Date();
+  date.setHours(3, 4, 5, 0);
+  const { time, timestamp } = renderMessageTime(date);
+
+  assert.equal(time.textContent, new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(date));
+  assert.equal(time.attrs.datetime, timestamp);
+  assert.equal(time.attrs.title, new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' }).format(date));
+});
+
+test('renders yesterday message timestamps with a localized relative day', () => {
+  const date = new Date();
+  date.setDate(date.getDate() - 1);
+  date.setHours(3, 4, 5, 0);
+  const { time, timestamp } = renderMessageTime(date);
+
+  const day = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }).format(-1, 'day');
+  const clock = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(date);
+  assert.equal(time.textContent, `${day} ${clock}`);
+  assert.equal(time.attrs.datetime, timestamp);
+});
+
+test('renders older message timestamps with date and time', () => {
+  const date = new Date();
+  date.setDate(date.getDate() - 2);
+  date.setHours(3, 4, 5, 0);
+  const { time, timestamp } = renderMessageTime(date);
+
+  assert.equal(time.textContent, new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date));
+  assert.equal(time.attrs.datetime, timestamp);
+});
+
+test('renders system event timestamps without an author role', () => {
+  const date = new Date();
+  date.setHours(3, 4, 5, 0);
+  const timestamp = date.toISOString();
+  const { doc } = renderApp({
+    view: testView(1, [
+      {
+        id: 'e1',
+        type: 'system',
+        timestamp,
+        content: [{ type: 'text', value: 'notice' }],
+      },
+    ]),
+  });
+
+  const system = doc.app.querySelector<TestNode>('.msg--system')!;
+  const meta = system.querySelector<TestNode>('.msg__meta')!;
+  const time = system.querySelector<TestNode>('time')!;
+  assert.match(meta.className, /msg__meta--system/);
+  assert.equal(system.querySelector<TestNode>('.msg__role'), null);
+  assert.equal(time.attrs.datetime, timestamp);
+});
+
+test('refresh updates existing timestamp labels after local day changes', () => {
+  const sentAt = new Date(2026, 0, 2, 22, 0, 0);
+  mock.timers.enable({ apis: ['Date'], now: new Date(2026, 0, 2, 23, 30, 0) });
+  try {
+    const event = { ...messageEvent('hello', 'e1'), timestamp: sentAt.toISOString() };
+    const { browser, doc } = renderApp({ view: testView(1, [event]) });
+    const time = doc.app.querySelector<TestNode>('time')!;
+    const todayLabel = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(sentAt);
+    assert.equal(time.textContent, todayLabel);
+
+    mock.timers.setTime(new Date(2026, 0, 3, 0, 30, 0).getTime());
+    browser.view = testView(2, [event, messageEvent('new', 'e2')]);
+    browser.render();
+
+    const day = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }).format(-1, 'day');
+    assert.equal(time.textContent, `${day} ${todayLabel}`);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+function renderMessageTime(date: Date): { time: TestNode; timestamp: string } {
+  const timestamp = date.toISOString();
+  const { doc } = renderApp({
+    view: testView(1, [{ ...messageEvent('hello', 'e1'), timestamp }]),
+  });
+  return { time: doc.app.querySelector<TestNode>('time')!, timestamp };
+}

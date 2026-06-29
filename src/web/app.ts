@@ -378,6 +378,7 @@ export class App {
     const appendOnly =
       existing.length <= events.length && existing.every((node, index) => node.getAttribute('data-event-id') === events[index]?.id);
     if (appendOnly) {
+      updateTimestamps(existing, events);
       for (const event of events.slice(existing.length)) messages.appendChild(this.renderEvent(event));
       return;
     }
@@ -472,6 +473,12 @@ export class App {
     if (event.type === 'system') {
       const box = el(this.doc, 'article', 'msg msg--system');
       box.setAttribute('data-event-id', event.id);
+      const timestamp = renderTimestamp(this.doc, event.timestamp);
+      if (timestamp) {
+        const meta = el(this.doc, 'div', 'msg__meta msg__meta--system');
+        meta.appendChild(timestamp);
+        box.appendChild(meta);
+      }
       const body = el(this.doc, 'div', 'msg__body');
       if (event.content) body.appendChild(renderContent(event.content, this.doc));
       box.appendChild(body);
@@ -481,7 +488,11 @@ export class App {
     const accent = isUser ? null : agentAccent(event.author);
     const box = el(this.doc, 'article', `msg ${isUser ? 'msg--user' : 'msg--agent'}${accent ? ` msg--${accent}` : ''}`);
     box.setAttribute('data-event-id', event.id);
-    box.appendChild(el(this.doc, 'div', 'msg__role', event.author ?? 'agent'));
+    const meta = el(this.doc, 'div', 'msg__meta');
+    meta.appendChild(el(this.doc, 'span', 'msg__role', event.author ?? 'agent'));
+    const timestamp = renderTimestamp(this.doc, event.timestamp);
+    if (timestamp) meta.appendChild(timestamp);
+    box.appendChild(meta);
     const body = el(this.doc, 'div', 'msg__body');
     if (event.content) body.appendChild(renderContent(event.content, this.doc));
     box.appendChild(body);
@@ -654,6 +665,47 @@ function emptyState(doc: Document, title: string, body: string): HTMLElement {
   box.appendChild(el(doc, 'h2', undefined, title));
   if (body) box.appendChild(el(doc, 'p', 'notice', body));
   return box;
+}
+
+const shortTime = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+const shortDateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const longTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
+const relativeDay = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+
+function renderTimestamp(doc: Document, timestamp: string): HTMLElement | null {
+  const time = el(doc, 'time', 'msg__time');
+  return fillTimestamp(time, timestamp) ? time : null;
+}
+
+function updateTimestamps(nodes: HTMLElement[], events: EventDTO[]): void {
+  for (let i = 0; i < nodes.length; i++) {
+    const time = nodes[i]?.querySelector<HTMLElement>('.msg__time');
+    const timestamp = events[i]?.timestamp;
+    if (time && timestamp) fillTimestamp(time, timestamp);
+  }
+}
+
+function fillTimestamp(time: HTMLElement, timestamp: string): boolean {
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return false;
+  time.textContent = timestampLabel(date);
+  time.setAttribute('datetime', timestamp);
+  time.setAttribute('title', longTime.format(date));
+  return true;
+}
+
+function timestampLabel(date: Date): string {
+  const now = new Date();
+  if (sameLocalDay(date, now)) return shortTime.format(date);
+
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  if (sameLocalDay(date, yesterday)) return `${relativeDay.format(-1, 'day')} ${shortTime.format(date)}`;
+
+  return shortDateTime.format(date);
+}
+
+function sameLocalDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
 /** "· Nm" once a presence has lasted at least a minute, else empty. */
