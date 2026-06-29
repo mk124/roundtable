@@ -135,6 +135,10 @@ export function findByText(node: TestNode, text: string): TestNode | null {
   return null;
 }
 
+export function firstSidebarConversationId(doc: { app: TestNode }): string | null {
+  return doc.app.querySelector<TestNode>('[data-sidebar-action="open"]')?.getAttribute('data-conversation-id') ?? null;
+}
+
 export const fakeDoc = () => new TestDocument() as unknown as Document;
 
 export const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -165,7 +169,7 @@ type AppInternals = {
   onSseDrop(controller: AbortController): void;
   onSend(textarea: HTMLTextAreaElement): Promise<void>;
   openConversation(id: string): Promise<void>;
-  refresh(): Promise<void>;
+  refresh(): Promise<boolean>;
   render(): void;
   sse: 'connected' | 'reconnecting' | 'disconnected';
   sseAbort: AbortController | null;

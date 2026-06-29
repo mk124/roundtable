@@ -55,7 +55,7 @@ export class App {
     this.live.textContent = message;
   }
 
-  private async loadConversations(): Promise<void> {
+  private async loadConversations(expected?: { id: string; epoch: number }): Promise<void> {
     const seq = ++this.listSeq;
     let result: { conversations: ConversationDTO[] };
     try {
@@ -63,7 +63,8 @@ export class App {
     } catch {
       return;
     }
-    if (seq !== this.listSeq) return;
+    if (seq !== this.listSeq || !Array.isArray(result?.conversations)) return;
+    if (expected && !this.isCurrentConversation(expected.id, expected.epoch)) return;
     this.conversations = result.conversations.filter((conv) => !this.removedConversationIds.has(conv.id));
     if (this.renderedConvId === this.conversationId && this.updateRenderedSidebar()) return;
     this.renderFull();
@@ -89,7 +90,7 @@ export class App {
     this.sse = 'connected';
     this.render();
     await this.refresh();
-    if (this.conversationId !== id || this.conversationEpoch !== epoch) return;
+    if (!this.isCurrentConversation(id, epoch)) return;
     if (this.view) this.connect(id);
     else this.retryOpen(id, epoch);
   }
@@ -103,9 +104,9 @@ export class App {
   }
 
   private async retryOpenNow(id: string, epoch: number): Promise<void> {
-    if (this.conversationId !== id || this.conversationEpoch !== epoch || this.view) return;
+    if (!this.isCurrentConversation(id, epoch) || this.view) return;
     await this.refresh();
-    if (this.conversationId !== id || this.conversationEpoch !== epoch) return;
+    if (!this.isCurrentConversation(id, epoch)) return;
     if (this.view) this.connect(id);
     else this.retryOpen(id, epoch);
   }
@@ -113,21 +114,22 @@ export class App {
   private connect(id: string): void {
     this.sseAbort?.abort(); // end any prior stream before opening a new one
     const controller = new AbortController();
+    const epoch = this.conversationEpoch;
     this.sseAbort = controller;
     void streamEvents(id, this.view?.cursor ?? 0, controller.signal, {
       onOpen: () => {
-        if (controller.signal.aborted || this.sseAbort !== controller || this.conversationId !== id) return;
+        if (controller.signal.aborted || this.sseAbort !== controller || !this.isCurrentConversation(id, epoch)) return;
         this.sse = 'connected';
         this.render();
       },
       onMessage: () => {
-        if (!controller.signal.aborted && this.conversationId === id) void this.refresh();
+        if (!controller.signal.aborted && this.isCurrentConversation(id, epoch)) void this.refreshAfterMessage(id, epoch);
       },
       onActivity: (active) => {
-        if (!controller.signal.aborted && this.conversationId === id) this.onActivity(active);
+        if (!controller.signal.aborted && this.isCurrentConversation(id, epoch)) this.onActivity(active);
       },
       onMissing: () => {
-        if (!controller.signal.aborted && this.sseAbort === controller && this.conversationId === id) this.clearMissingConversation(id);
+        if (!controller.signal.aborted && this.sseAbort === controller && this.isCurrentConversation(id, epoch)) this.clearMissingConversation(id);
       },
       onDrop: () => this.onSseDrop(controller),
     });
@@ -158,8 +160,8 @@ export class App {
     this.ensureActivityTimer();
   }
 
-  private async refresh(): Promise<void> {
-    if (!this.conversationId) return;
+  private async refresh(): Promise<boolean> {
+    if (!this.conversationId) return false;
     const id = this.conversationId;
     const epoch = this.conversationEpoch;
     const seq = ++this.refreshSeq;
@@ -167,28 +169,34 @@ export class App {
     try {
       view = await this.api.view(id);
     } catch {
-      return;
+      return false;
     }
-    if (this.conversationId !== id) return;
-    if (this.conversationEpoch !== epoch) return;
+    if (!this.isCurrentConversation(id, epoch)) return false;
     if (!view) {
-      if (seq < this.appliedRefreshSeq) return;
-      return this.clearMissingConversation(id);
+      if (seq < this.appliedRefreshSeq) return false;
+      this.clearMissingConversation(id);
+      return true;
     }
     if (this.view) {
-      if (view.cursor < this.view.cursor) return;
-      if (view.cursor === this.view.cursor && this.view.readOnly && !view.readOnly) return;
+      if (view.cursor < this.view.cursor) return false;
+      if (view.cursor === this.view.cursor && this.view.readOnly && !view.readOnly) return false;
       if (seq < this.appliedRefreshSeq && view.cursor === this.view.cursor) {
         if (view.readOnly && !this.view.readOnly) {
           this.view = { ...this.view, readOnly: true };
           this.render();
+          return true;
         }
-        return;
+        return false;
       }
     }
     this.view = view;
     this.appliedRefreshSeq = Math.max(this.appliedRefreshSeq, seq);
     this.render();
+    return true;
+  }
+
+  private async refreshAfterMessage(id: string, epoch: number): Promise<void> {
+    if (await this.refresh() && this.isCurrentConversation(id, epoch)) await this.loadConversations({ id, epoch });
   }
 
   private clearMissingConversation(id: string): void {
@@ -585,7 +593,7 @@ export class App {
       }
       this.sendError = null;
       this.announce('Message sent.');
-      await this.refresh();
+      await this.refreshAfterMessage(id, epoch);
     } else {
       this.sendError = result.error ?? 'Message rejected.';
       this.render();
