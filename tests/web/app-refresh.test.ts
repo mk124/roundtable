@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { conversation, eventStream, findByText, messageEvent, neverResponse, pendingResponse, renderApp, testView, tick, withFetch, withWindowTimeout } from './app-test-harness.ts';
+import { conversation, eventStream, findByText, messageEvent, neverResponse, pendingResponse, projectList, renderApp, testView, tick, withFetch, withWindowTimeout } from './app-test-harness.ts';
 import type { TestEvent, TestNode } from './app-test-harness.ts';
 
 test('message refresh preserves an in-progress composer draft', async () => {
@@ -698,7 +698,7 @@ test('fresh missing refresh responses clear the active conversation', async () =
   const { browser, doc } = renderApp();
 
   await withFetch(async (input) => {
-    if (String(input) === '/api/conversations') return Response.json({ conversations: [] });
+    if (String(input) === '/api/projects') return Response.json(projectList([]));
     return new Response(JSON.stringify({ error: 'missing' }), { status: 404 });
   }, async () => {
     await browser.refresh();
@@ -716,7 +716,7 @@ test('fresh missing refresh removes stale chat before the list reload finishes',
   await withFetch(async (input) => {
     const path = String(input);
     if (path === '/api/conversations/c1') return new Response(JSON.stringify({ error: 'missing' }), { status: 404 });
-    if (path === '/api/conversations') return neverResponse();
+    if (path === '/api/projects') return neverResponse();
     return Response.json(testView());
   }, async () => {
     await browser.refresh();
@@ -739,9 +739,9 @@ test('stale post-missing list responses do not restore the missing row', async (
   await withFetch(async (input) => {
     const path = String(input);
     if (path === '/api/conversations/c1') return new Response(JSON.stringify({ error: 'missing' }), { status: 404 });
-    if (path === '/api/conversations') {
+    if (path === '/api/projects') {
       listRequests++;
-      return Response.json({ conversations: [conversation('c1', 'One stale'), conversation('c2', 'Two refreshed')] });
+      return Response.json(projectList([conversation('c1', 'One stale'), conversation('c2', 'Two refreshed')]));
     }
     return Response.json(testView());
   }, async () => {
@@ -766,7 +766,7 @@ test('deleting the active conversation removes stale chat before the list reload
     await withFetch(async (input) => {
       const path = String(input);
       if (path === '/api/conversations/c1') return Response.json({ ok: true });
-      if (path === '/api/conversations') return neverResponse();
+      if (path === '/api/projects') return neverResponse();
       return Response.json(testView());
     }, async () => {
       void browser.deleteConversation(conversation());
@@ -798,7 +798,7 @@ test('deleting another conversation removes its sidebar row and preserves the ac
     await withFetch(async (input) => {
       const path = String(input);
       if (path === '/api/conversations/c2') return Response.json({ ok: true });
-      if (path === '/api/conversations') return neverResponse();
+      if (path === '/api/projects') return neverResponse();
       return Response.json(testView());
     }, async () => {
       const textarea = doc.app.querySelector<TestNode>('.composer__input')!;
@@ -838,9 +838,9 @@ test('stale post-delete list responses do not restore the deleted row', async ()
     await withFetch(async (input) => {
       const path = String(input);
       if (path === '/api/conversations/c2') return Response.json({ ok: true });
-      if (path === '/api/conversations') {
+      if (path === '/api/projects') {
         listRequests++;
-        return Response.json({ conversations: [conversation('c1', 'One refreshed'), conversation('c2', 'Two stale')] });
+        return Response.json(projectList([conversation('c1', 'One refreshed'), conversation('c2', 'Two stale')]));
       }
       return Response.json(testView());
     }, async () => {

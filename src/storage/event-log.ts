@@ -19,7 +19,7 @@ function headingFor(event: RoundtableEvent): string {
  * markers carrying the conversation nonce, the verbatim body, and an end marker
  * with the body checksum. The leading `\n` guarantees the marker lands at a
  * strict line start even if a crash left the previous write without a trailing
- * newline (R18, R20).
+ * newline.
  */
 function serializeEvent(event: RoundtableEvent, nonce: string): string {
   const { body, ...meta } = event;
@@ -38,7 +38,7 @@ export interface AppendResult {
 
 /**
  * Append-only event log for a single conversation file. One writer at a time;
- * this class owns framing, checksums, size limits (R48), and restart quarantine
+ * this class owns framing, checksums, size limits, and restart quarantine
  * of an interrupted trailing write.
  */
 export class ConversationLog {
@@ -105,7 +105,7 @@ export class ConversationLog {
     return this.readOnly_;
   }
 
-  /** Append an event, enforcing R48 size limits. Appends are serialized so each
+  /** Append an event, enforcing size limits. Appends are serialized so each
    *  event's size check, file write, and in-memory push complete before the next
    *  begins — concurrent posts to one conversation are a core path. An oversized
    *  single event is rejected (the caller surfaces a 400); exhausting the
@@ -135,7 +135,7 @@ export class ConversationLog {
   }
 
   /** Fence off an interrupted trailing fragment so the conversation is writable
-   *  again, never trimming the original bytes (R20). */
+   *  again, never trimming the original bytes. */
   private async quarantine(): Promise<void> {
     const result = await this.appendOne({
       id: newEventId(),

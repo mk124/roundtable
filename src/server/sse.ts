@@ -23,7 +23,7 @@ function activityChunk(active: ActivityEntry[]): string {
 /**
  * The live channel for one conversation. It carries two kinds of update:
  * durable message bumps (tagged with the event-count cursor, buffered for
- * Last-Event-ID replay, R25), and ephemeral presence (`activity`, in-memory,
+ * Last-Event-ID replay), and ephemeral presence (`activity`, in-memory,
  * snapshot-broadcast, never buffered or replayed).
  */
 export class SseHub {
@@ -31,6 +31,7 @@ export class SseHub {
   private readonly buffer: { id: number; chunk: string }[] = [];
   private readonly bufferLimit: number;
   private readonly activity = new Map<string, ActivityEntry>();
+  private closed = false;
 
   constructor(bufferLimit = 100) {
     this.bufferLimit = bufferLimit;
@@ -73,6 +74,10 @@ export class SseHub {
   /** Add a client, replaying buffered message events after lastEventId and
    *  sending the current presence snapshot once. Returns an unsubscribe. */
   subscribe(client: SseClient, lastEventId = 0): () => void {
+    if (this.closed) {
+      client.close?.(); // the conversation was torn down between context resolution and here
+      return () => {};
+    }
     for (const entry of this.buffer) {
       if (entry.id > lastEventId) client.write(entry.chunk);
     }
@@ -84,6 +89,7 @@ export class SseHub {
   /** End every open stream and drop all clients. Used when the conversation is
    *  deleted, so live browsers stop reconnecting to something that's gone. */
   close(): void {
+    this.closed = true;
     for (const client of this.clients) client.close?.();
     this.clients.clear();
   }

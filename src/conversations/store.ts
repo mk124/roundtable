@@ -1,6 +1,7 @@
-import { chmod, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { ConversationMetadata } from '../types.ts';
+import { isRecord, readJsonSidecar, writeJsonPrivate } from '../storage/sidecar.ts';
 import { conversationFilename, conversationId, isConversationId } from './naming.ts';
 
 const META_SUFFIX = '.meta.json';
@@ -10,26 +11,12 @@ export type ConversationUpdate = Partial<
   Pick<ConversationMetadata, 'title' | 'lastActivityAt' | 'readOnly'>
 >;
 
-/** Read sidecar metadata, or null when absent, unparseable, or malformed. */
-async function readMetadata(path: string): Promise<ConversationMetadata | null> {
-  try {
-    const parsed = JSON.parse(await readFile(path, 'utf8'));
-    return isConversationMetadata(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Write JSON sidecar metadata with current-user-private permissions (R32). */
-async function writeJsonPrivate(path: string, value: unknown): Promise<void> {
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await chmod(path, 0o600);
-}
+const readMetadata = (path: string) => readJsonSidecar(path, isConversationMetadata);
 
 /**
  * Manages conversation sidecar metadata under `~/.roundtable/conversations/`.
  * The conversationId, title, filename, and timestamps live here — never in the
- * human-readable Markdown event log (R32). The Markdown file itself is owned by
+ * human-readable Markdown event log. The Markdown file itself is owned by
  * ConversationLog.
  */
 export class ConversationStore {
@@ -128,8 +115,4 @@ function isConversationMetadata(value: unknown): value is ConversationMetadata {
 
 function isSafeMarkdownFilename(value: unknown): value is string {
   return typeof value === 'string' && value.endsWith('.md') && value === basename(value) && !value.includes('\\');
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }

@@ -1,5 +1,6 @@
 import type { EventMetadata, RoundtableEvent } from '../types.ts';
 import { bodyChecksum, readNonce } from './markdown-safety.ts';
+import { isRecord } from './sidecar.ts';
 
 export interface ParseResult {
   /** Framing nonce read from the header; null for an empty (new) file. */
@@ -14,10 +15,10 @@ export interface ParseResult {
 }
 
 /**
- * Rebuild a conversation purely by scanning its Markdown (R20). Correctness rests
+ * Rebuild a conversation purely by scanning its Markdown. Correctness rests
  * only on the framing nonce, strict line-start markers, and the body checksum —
  * never on Markdown fence state — so unclosed fences, tilde/indented fences, and
- * malformed bodies cannot move an event boundary (R19).
+ * malformed bodies cannot move an event boundary.
  */
 export function parseConversation(content: string): ParseResult {
   if (content.length === 0) return { nonce: null, events: [], corrupt: false };
@@ -121,8 +122,4 @@ function buildEvent(meta: unknown, body: string): RoundtableEvent | null {
   const { payload } = meta;
   if (!isRecord(payload) || payload.kind !== 'quarantine-fence') return null;
   return { ...base, type: 'system', payload: { kind: 'quarantine-fence' }, body };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }

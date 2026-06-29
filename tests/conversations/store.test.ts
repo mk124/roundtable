@@ -36,7 +36,7 @@ test('update changes the title but never the id or filename', async () => {
   assert.equal(updated?.filename, meta.filename);
 });
 
-test('conversationId never enters the Markdown log (R32)', async () => {
+test('conversationId never enters the Markdown log', async () => {
   const store = new ConversationStore(await tempDir('rt-root-'));
   const meta = await store.create('Chat');
   const log = await ConversationLog.open(store.conversationFilePath(meta));
@@ -45,7 +45,7 @@ test('conversationId never enters the Markdown log (R32)', async () => {
   assert.ok(!markdown.includes(meta.id));
 });
 
-test('metadata files use current-user-private permissions (R32)', async () => {
+test('metadata files use current-user-private permissions', async () => {
   const root = await tempDir('rt-root-');
   const store = new ConversationStore(root);
   const meta = await store.create('Chat');
@@ -107,7 +107,7 @@ test('delete removes the markdown log and sidecar; an unknown id is a no-op', as
   assert.equal(await store.delete('deadbeefdeadbeef'), false);
 });
 
-test('an unsluggable title falls back to a dated filename (R41)', async () => {
+test('an unsluggable title falls back to a dated filename', async () => {
   const meta = await new ConversationStore(await tempDir('rt-root-')).create('!!!');
   assert.match(meta.filename, /^conversation-\d{4}-\d{2}-\d{2}-[0-9a-f]{8}\.md$/);
 });

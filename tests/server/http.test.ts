@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type ConversationView, type RoundtableApp } from '../../src/server/http.ts';
 import { RedactingLogger } from '../../src/server/logging.ts';
+import type { ConversationMetadata, ProjectMetadata } from '../../src/types.ts';
 
 function freePort(): Promise<number> {
   return new Promise((resolve) => {
@@ -16,6 +17,9 @@ function freePort(): Promise<number> {
     });
   });
 }
+
+const CONV: ConversationMetadata = { id: 'c1', title: 'Chat', filename: 'c.md', createdAt: 't', lastActivityAt: 't' };
+const PROJECT: ProjectMetadata = { id: 'p1', path: '/abs/proj', title: 'proj', addedAt: 't' };
 
 function fakeView(): ConversationView {
   return {
@@ -30,11 +34,17 @@ function fakeView(): ConversationView {
 
 function fakeApp(over: Partial<RoundtableApp> = {}): RoundtableApp {
   return {
-    async listConversations() {
-      return [{ id: 'c1', title: 'Chat', filename: 'c.md', createdAt: 't', lastActivityAt: 't' }];
+    async listProjects() {
+      return [{ project: PROJECT, conversations: [CONV] }];
     },
-    async createConversation(title) {
-      return { ok: true, conversation: { id: 'c1', title, filename: 'c.md', createdAt: 't', lastActivityAt: 't' } };
+    async addProject(path) {
+      return path.startsWith('/') ? { ok: true, project: { ...PROJECT, path } } : { ok: false, error: 'project path must be absolute' };
+    },
+    async removeProject(id) {
+      return id === 'p1' ? { ok: true } : { ok: false, error: 'unknown project' };
+    },
+    async createConversation(projectId, title) {
+      return projectId === 'p1' ? { ok: true, conversation: { ...CONV, title } } : { ok: false, error: 'unknown project' };
     },
     async deleteConversation(id) {
       return id === 'c1' ? { ok: true } : { ok: false, error: 'unknown conversation' };
@@ -76,23 +86,63 @@ async function withServer(fn: (ctx: { origin: string; app: RoundtableApp }) => P
 const postJson = (origin: string, path: string, body: unknown, extra: Record<string, string> = {}) =>
   fetch(`${origin}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...extra }, body: JSON.stringify(body) });
 
-test('lists conversations with no auth (loopback is the only boundary)', async () => {
+// ── Projects (sidebar gating + grouping) ──────────────────────────────────
+
+test('GET /api/projects returns projects with their conversations embedded', async () => {
   await withServer(async ({ origin }) => {
-    const res = await fetch(`${origin}/api/conversations`);
+    const res = await fetch(`${origin}/api/projects`);
     assert.equal(res.status, 200);
-    assert.equal(((await res.json()) as { conversations: unknown[] }).conversations.length, 1);
+    const body = (await res.json()) as { projects: Array<{ id: string; path: string; title: string; conversations: Array<{ id: string }> }> };
+    assert.equal(body.projects.length, 1);
+    assert.equal(body.projects[0]!.id, 'p1');
+    assert.equal(body.projects[0]!.path, '/abs/proj');
+    assert.equal(body.projects[0]!.conversations[0]!.id, 'c1');
   });
 });
 
-test('createConversation succeeds and is CSRF-guarded like other state changes', async () => {
+test('POST /api/projects adds a project, rejects an invalid path, and is CSRF-guarded', async () => {
   await withServer(async ({ origin }) => {
-    const evil = await postJson(origin, '/api/conversations', { title: 'x' }, { Origin: 'http://evil.test' });
+    const evil = await postJson(origin, '/api/projects', { path: '/abs/proj' }, { Origin: 'http://evil.test' });
     assert.equal(evil.status, 403);
-    const ok = await postJson(origin, '/api/conversations', { title: 'New chat' });
+    const bad = await postJson(origin, '/api/projects', { path: 'relative' });
+    assert.equal(bad.status, 400);
+    const ok = await postJson(origin, '/api/projects', { path: '/abs/proj' });
+    assert.equal(ok.status, 200);
+    assert.equal(((await ok.json()) as { project: { path: string } }).project.path, '/abs/proj');
+  });
+});
+
+test('DELETE /api/projects/:id removes a project, 404s an unknown id, and is CSRF-guarded', async () => {
+  await withServer(async ({ origin }) => {
+    const evil = await fetch(`${origin}/api/projects/p1`, { method: 'DELETE', headers: { Origin: 'http://evil.test' } });
+    assert.equal(evil.status, 403);
+    const missing = await fetch(`${origin}/api/projects/nope`, { method: 'DELETE' });
+    assert.equal(missing.status, 404);
+    const ok = await fetch(`${origin}/api/projects/p1`, { method: 'DELETE' });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), { ok: true });
+  });
+});
+
+test('POST /api/projects/:id/conversations creates within the project and is CSRF-guarded', async () => {
+  await withServer(async ({ origin }) => {
+    const evil = await postJson(origin, '/api/projects/p1/conversations', { title: 'x' }, { Origin: 'http://evil.test' });
+    assert.equal(evil.status, 403);
+    const unknown = await postJson(origin, '/api/projects/nope/conversations', { title: 'x' });
+    assert.equal(unknown.status, 400);
+    const ok = await postJson(origin, '/api/projects/p1/conversations', { title: 'New chat' });
     assert.equal(ok.status, 200);
     assert.equal(((await ok.json()) as { conversation: { title: string } }).conversation.title, 'New chat');
   });
 });
+
+test('the flat GET /api/conversations list endpoint is gone', async () => {
+  await withServer(async ({ origin }) => {
+    assert.equal((await fetch(`${origin}/api/conversations`)).status, 404);
+  });
+});
+
+// ── Conversations by id (the agent contract — unchanged) ───────────────────
 
 test('the view DTO renders markdown and exposes author + cursor', async () => {
   await withServer(async ({ origin }) => {
@@ -114,7 +164,7 @@ test('say appends and returns the new cursor', async () => {
   });
 });
 
-test('say rejects an oversized message (AE17)', async () => {
+test('say rejects an oversized message', async () => {
   await withServer(async ({ origin }) => {
     const res = await postJson(origin, '/api/conversations/c1/say', { author: 'x', text: 'x'.repeat(2000) });
     assert.equal(res.status, 400);
@@ -124,7 +174,7 @@ test('say rejects an oversized message (AE17)', async () => {
 test('malformed JSON is rejected before the app is called', async () => {
   let called = false;
   await withServer(async ({ origin }) => {
-    const res = await fetch(`${origin}/api/conversations`, {
+    const res = await fetch(`${origin}/api/projects/p1/conversations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{',
@@ -133,9 +183,9 @@ test('malformed JSON is rejected before the app is called', async () => {
     assert.deepEqual(await res.json(), { error: 'invalid JSON body' });
     assert.equal(called, false);
   }, fakeApp({
-    async createConversation() {
+    async createConversation(_projectId, title) {
       called = true;
-      return { ok: true, conversation: { id: 'c2', title: 'bad', filename: 'bad.md', createdAt: 't', lastActivityAt: 't' } };
+      return { ok: true, conversation: { ...CONV, title } };
     },
   }));
 });
@@ -261,7 +311,7 @@ test('an unknown-id 404 body is uniform across routes (DELETE included)', async 
 
 test('every response carries a Content-Security-Policy', async () => {
   await withServer(async ({ origin }) => {
-    const res = await fetch(`${origin}/api/conversations`);
+    const res = await fetch(`${origin}/api/projects`);
     assert.match(res.headers.get('content-security-policy') ?? '', /default-src 'self'/);
   });
 });

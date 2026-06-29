@@ -49,6 +49,16 @@ test('close ends every stream and drops all clients', () => {
   assert.equal(hub.clientCount, 0);
 });
 
+test('subscribing after close immediately closes the late client and registers nothing', () => {
+  const hub = new SseHub();
+  hub.close();
+  let closed = 0;
+  const off = hub.subscribe({ write() {}, close() { closed++; } }); // a subscribe that lost the teardown race
+  assert.equal(closed, 1); // closed at once, not parked on a dead hub
+  assert.equal(hub.clientCount, 0);
+  off(); // unsubscribe is a safe no-op
+});
+
 test('setActivity broadcasts an unbuffered snapshot frame with no id', () => {
   const hub = new SseHub();
   const a = client();

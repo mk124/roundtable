@@ -5,7 +5,7 @@ import { agentAccent, composerState } from '../../src/web/ui-state.ts';
 import { fakeDoc, messageEvent, render, renderApp, testView } from './app-test-harness.ts';
 import type { TestNode } from './app-test-harness.ts';
 
-test('text content becomes a text node, never markup (AE13)', () => {
+test('text content becomes a text node, never markup', () => {
   const frag = renderContent([{ type: 'text', value: '<script>alert(1)</script>' }], fakeDoc()) as unknown as TestNode;
   assert.equal(frag.children[0]!.tag, '#text'); // created via createTextNode, not parsed
   assert.equal(frag.children[0]!._text, '<script>alert(1)</script>');

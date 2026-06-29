@@ -3,7 +3,7 @@ export interface LogSink {
 }
 
 /**
- * All logging passes through here (R33). Any value registered via
+ * All logging passes through here. Any value registered via
  * `registerSecret` is replaced with `[redacted]` before a line is written.
  * Conversation bodies are never logged by callers in the first place; this layer
  * is only a backstop against incidental sensitive substrings (e.g. local paths).

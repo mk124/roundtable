@@ -19,7 +19,7 @@ export function shortId(): string {
 }
 
 /** A high-entropy conversation id. Stored only in sidecar metadata, never in
- *  the human-readable Markdown (R32). */
+ *  the human-readable Markdown. */
 export function conversationId(): string {
   return randomBytes(8).toString('hex'); // 16 hex chars
 }
@@ -30,7 +30,7 @@ export function isConversationId(id: string): boolean {
 
 /**
  * Build a readable conversation filename: English slug + short id. Falls back to
- * `conversation-<date>-<short-id>` when the title yields no slug (R41). The
+ * `conversation-<date>-<short-id>` when the title yields no slug. The
  * sidecar metadata, not this name, is the authority for identifying a
  * conversation, so a later title rename never breaks lookup.
  */

@@ -5,10 +5,10 @@ const md = new MarkdownIt({ html: false, linkify: false, breaks: false });
 type Token = ReturnType<typeof md.parse>[number];
 
 /**
- * A safe render node. The server is the only Markdown-safety boundary (R28): it
+ * A safe render node. The server is the only Markdown-safety boundary: it
  * parses with raw HTML disabled and emits an allowlisted node tree. The frontend
  * builds DOM/text nodes from this and never calls innerHTML, so untrusted
- * conversation content can never become markup (AE13).
+ * conversation content can never become markup.
  */
 export interface RenderNode {
   type:
@@ -104,7 +104,7 @@ function convertBlocks(tokens: Token[]): RenderNode[] {
         convertInline(token.children ?? [], top());
         break;
       case 'html_block':
-        add({ type: 'text', value: token.content }); // raw HTML → literal text (AE13)
+        add({ type: 'text', value: token.content }); // raw HTML → literal text
         break;
       default:
         break; // thead/tbody wrappers, hr, etc. are flattened or dropped
@@ -138,7 +138,7 @@ function convertInline(tokens: Token[], parent: RenderNode): void {
       }
       case 'link_close': close(); break;
       case 'image': add({ type: 'text', value: token.content }); break; // image → alt text only
-      case 'html_inline': add({ type: 'text', value: token.content }); break; // raw HTML → text (AE13)
+      case 'html_inline': add({ type: 'text', value: token.content }); break; // raw HTML → text
       default:
         if (token.content) add({ type: 'text', value: token.content });
         break;

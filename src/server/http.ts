@@ -2,7 +2,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { stripTypeScriptTypes } from 'node:module';
-import type { ConversationMetadata, RoundtableEvent } from '../types.ts';
+import type { ConversationMetadata, ProjectMetadata, RoundtableEvent } from '../types.ts';
 import { renderMarkdown } from './render.ts';
 import { cspHeader } from './security.ts';
 import type { RedactingLogger } from './logging.ts';
@@ -15,11 +15,21 @@ export interface ConversationView {
   cursor: number;
 }
 
+/** A project with its conversations embedded — one sidebar group. */
+export interface ProjectWithConversations {
+  project: ProjectMetadata;
+  conversations: ConversationMetadata[];
+}
+
 /** Business surface the HTTP layer drives. startup.ts assembles the real
- *  implementation over the store + SSE; tests inject a fake. */
+ *  implementation over the stores + SSE; tests inject a fake. Conversations are
+ *  addressed by their globally-unique id (the agent contract); projects gate and
+ *  group them for the human sidebar. */
 export interface RoundtableApp {
-  listConversations(): Promise<ConversationMetadata[]>;
-  createConversation(title: string): Promise<{ ok: true; conversation: ConversationMetadata } | { ok: false; error: string }>;
+  listProjects(): Promise<ProjectWithConversations[]>;
+  addProject(path: string): Promise<{ ok: true; project: ProjectMetadata } | { ok: false; error: string }>;
+  removeProject(projectId: string): Promise<{ ok: true } | { ok: false; error: string }>;
+  createConversation(projectId: string, title: string): Promise<{ ok: true; conversation: ConversationMetadata } | { ok: false; error: string }>;
   deleteConversation(conversationId: string): Promise<{ ok: true } | { ok: false; error: string }>;
   view(conversationId: string): Promise<ConversationView | null>;
   say(conversationId: string, author: string, text: string): Promise<{ ok: true; cursor: number } | { ok: false; error: string }>;
@@ -43,7 +53,7 @@ type JsonReadResult =
   | { ok: true; value: Record<string, unknown> }
   | { ok: false; status: 400 | 413; error: string };
 
-/** Build the loopback HTTP server. Refuses any non-loopback bind host (R31). */
+/** Build the loopback HTTP server. Refuses any non-loopback bind host. */
 export function createServer(deps: ServerDeps): http.Server {
   if (!LOOPBACK.has(deps.bindHost)) throw new Error('roundtable only binds to a loopback address');
   const expectedOrigin = `http://${deps.bindHost}:${deps.port}`;
@@ -87,21 +97,38 @@ export function createServer(deps: ServerDeps): http.Server {
     const seg = url.pathname.slice('/api/'.length).split('/').filter(Boolean);
     const [resource, id, action] = seg;
 
+    if (resource === 'projects') {
+      // Same CSRF guard as conversations: state changes from a foreign Origin are
+      // refused; GET reads and the agents' no-Origin requests pass.
+      if (req.method !== 'GET' && crossSite(req)) return forbidden(res);
+      if (!id) {
+        if (req.method === 'GET') {
+          const projects = await deps.app.listProjects();
+          return json(res, 200, { projects: projects.map(projectDTO) });
+        }
+        if (req.method === 'POST') {
+          const body = await readJson(req);
+          if (!body.ok) return json(res, body.status, { error: body.error });
+          const result = await deps.app.addProject(String(body.value.path ?? ''));
+          return result.ok ? json(res, 200, { project: projectSummary(result.project) }) : json(res, 400, { error: result.error });
+        }
+      } else if (action === 'conversations' && req.method === 'POST') {
+        const body = await readJson(req);
+        if (!body.ok) return json(res, body.status, { error: body.error });
+        const result = await deps.app.createConversation(id, String(body.value.title ?? ''));
+        return result.ok ? json(res, 200, { conversation: conversationSummary(result.conversation) }) : json(res, 400, { error: result.error });
+      } else if (!action && req.method === 'DELETE') {
+        const result = await deps.app.removeProject(id);
+        return result.ok ? json(res, 200, result) : notFound(res);
+      }
+    }
+
     if (resource === 'conversations') {
       // CSRF guard: refuse any state change (POST/DELETE) from a foreign Origin;
       // GET reads and the agents' no-Origin requests pass (see crossSite above).
       if (req.method !== 'GET' && crossSite(req)) return forbidden(res);
       if (!id) {
-        if (req.method === 'GET') {
-          const list = await deps.app.listConversations();
-          return json(res, 200, { conversations: list.map(conversationSummary) });
-        }
-        if (req.method === 'POST') {
-          const body = await readJson(req);
-          if (!body.ok) return json(res, body.status, { error: body.error });
-          const result = await deps.app.createConversation(String(body.value.title ?? ''));
-          return result.ok ? json(res, 200, { conversation: conversationSummary(result.conversation) }) : json(res, 400, { error: result.error });
-        }
+        return notFound(res); // the flat list and create moved under /api/projects
       } else if (!action && req.method === 'GET') {
         const view = await deps.app.view(id);
         return view ? json(res, 200, viewDTO(view)) : notFound(res);
@@ -170,10 +197,22 @@ export function createServer(deps: ServerDeps): http.Server {
   }
 }
 
-// ── DTO serialization (display-safe; R28, R33) ────────────────────────────
+// ── DTO serialization (display-safe) ──────────────────────────────────────
 
 function conversationSummary(meta: ConversationMetadata) {
   return { id: meta.id, title: meta.title, createdAt: meta.createdAt, lastActivityAt: meta.lastActivityAt, readOnly: meta.readOnly ?? false };
+}
+
+/** The project's own fields. `path` carries the full absolute path so the sidebar
+ *  can disambiguate projects that share a basename. */
+function projectSummary(project: ProjectMetadata) {
+  return { id: project.id, path: project.path, title: project.title };
+}
+
+/** A sidebar group: the project plus its conversations, already activity-ordered
+ *  by the service. */
+function projectDTO(group: ProjectWithConversations) {
+  return { ...projectSummary(group.project), conversations: group.conversations.map(conversationSummary) };
 }
 
 /** The raw event as agents polling /messages consume it — no render tree. */
@@ -182,7 +221,7 @@ function messageDTO(event: RoundtableEvent) {
   return event.type === 'message' ? { ...base, author: event.author, text: event.body } : base;
 }
 
-/** The browser view event: messageDTO plus the display-safe render tree (R28). */
+/** The browser view event: messageDTO plus the display-safe render tree. */
 function eventDTO(event: RoundtableEvent) {
   return { ...messageDTO(event), content: renderMarkdown(event.body) };
 }

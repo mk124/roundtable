@@ -37,7 +37,7 @@ test('appends and reloads events across a restart, keeping the author', async ()
   assert.ok(second.type === 'message' && second.author === 'Claude Opus 4.8' && second.body === 'answer');
 });
 
-test('rejects an oversized message without writing it (AE17)', async () => {
+test('rejects an oversized message without writing it', async () => {
   const path = await tempFile();
   const log = await ConversationLog.open(path, { ...ROOMY, messageBytes: 8 });
   const res = await log.append({ id: 'e1', type: 'message', timestamp: 't', author: 'user', body: 'way too long' });

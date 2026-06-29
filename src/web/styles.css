@@ -107,15 +107,74 @@ textarea {
   overflow-y: auto;
   padding: var(--gap);
 }
-.sidebar__title {
+.sidebar__empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 10px 6px;
+}
+
+/* ── Project groups ─────────────────────────────────────────────────── */
+
+.project {
+  margin-top: 12px;
+}
+.project__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 4px 4px;
+}
+.project__title {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--muted);
-  margin: 14px 4px 6px;
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.sidebar__title:first-child {
-  margin-top: 4px;
+.project__title::before {
+  content: '▼'; /* disclosure caret; flipped to ▶ by .project--collapsed */
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 10px;
+  vertical-align: middle;
+}
+.project--collapsed .project__title::before {
+  content: '▶';
+}
+.project__title:hover {
+  color: var(--text);
+}
+.project__del {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0; /* revealed on group hover/focus, like the conversation delete */
+}
+.project__head:hover .project__del,
+.project__head:focus-within .project__del {
+  opacity: 1;
+}
+.project__del:hover {
+  background: var(--surface-2);
+  color: var(--danger);
 }
 
 .nav-item {

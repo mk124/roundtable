@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { conversation, findByText, messageEvent, pendingResponse, renderApp, testView, withFetch } from './app-test-harness.ts';
+import { conversation, findByText, messageEvent, pendingResponse, projectList, renderApp, testView, withFetch } from './app-test-harness.ts';
 import type { TestNode } from './app-test-harness.ts';
 
 test('conversation list refresh preserves same-conversation UI nodes and scroll position', async () => {
   const { browser, doc } = renderApp({ view: testView(1, [messageEvent('still reading')]) });
 
   await withFetch(async (input) => {
-    assert.equal(String(input), '/api/conversations');
-    return Response.json({ conversations: [conversation(), conversation('c2', 'Two')] });
+    assert.equal(String(input), '/api/projects');
+    return Response.json(projectList([conversation(), conversation('c2', 'Two')]));
   }, async () => {
     const oldLog = doc.app.querySelector<TestNode>('.chat__log')!;
     const oldSidebar = doc.app.querySelector<TestNode>('.sidebar__scroll')!;
@@ -22,7 +22,7 @@ test('conversation list refresh preserves same-conversation UI nodes and scroll 
     oldTextarea.oninput?.();
     oldTextarea.focus();
 
-    await browser.loadConversations();
+    await browser.loadProjects();
 
     const newLog = doc.app.querySelector<TestNode>('.chat__log')!;
     const newSidebar = doc.app.querySelector<TestNode>('.sidebar__scroll')!;
@@ -47,13 +47,13 @@ test('conversation list refresh restores focused sidebar controls', async () => 
   });
 
   await withFetch(async (input) => {
-    assert.equal(String(input), '/api/conversations');
-    return Response.json({ conversations: [conversation('c1', 'One'), conversation('c2', 'Two updated')] });
+    assert.equal(String(input), '/api/projects');
+    return Response.json(projectList([conversation('c1', 'One'), conversation('c2', 'Two updated')]));
   }, async () => {
     const nav = findByText(doc.app, 'Two')!;
     nav.focus();
 
-    await browser.loadConversations();
+    await browser.loadProjects();
 
     const updatedNav = findByText(doc.app, 'Two updated')!;
     assert.equal(doc.activeElement, updatedNav);
@@ -67,13 +67,13 @@ test('conversation list failures keep the last good sidebar', async () => {
   });
 
   await withFetch(async (input) => {
-    assert.equal(String(input), '/api/conversations');
+    assert.equal(String(input), '/api/projects');
     return new Response('temporary failure', { status: 503 });
   }, async () => {
     const nav = findByText(doc.app, 'Two')!;
     nav.focus();
 
-    await browser.loadConversations();
+    await browser.loadProjects();
 
     assert.match(doc.app.textContent, /One/);
     assert.match(doc.app.textContent, /Two/);
@@ -87,10 +87,10 @@ test('malformed conversation list responses keep the last good sidebar', async (
   });
 
   await withFetch(async (input) => {
-    assert.equal(String(input), '/api/conversations');
+    assert.equal(String(input), '/api/projects');
     return Response.json(testView());
   }, async () => {
-    await browser.loadConversations();
+    await browser.loadProjects();
 
     assert.match(doc.app.textContent, /One/);
     assert.match(doc.app.textContent, /Two/);
@@ -107,16 +107,16 @@ test('older conversation list responses do not replace newer sidebar state', asy
   const responses = [olderResponse.response, newerResponse.response];
 
   await withFetch(async (input) => {
-    assert.equal(String(input), '/api/conversations');
-    return responses.shift() ?? Response.json({ conversations: [conversation('c1', 'One')] });
+    assert.equal(String(input), '/api/projects');
+    return responses.shift() ?? Response.json(projectList([conversation('c1', 'One')]));
   }, async () => {
-    const older = browser.loadConversations();
-    const newer = browser.loadConversations();
+    const older = browser.loadProjects();
+    const newer = browser.loadProjects();
 
-    newerResponse.resolve(Response.json({ conversations: [conversation('c1', 'One')] }));
+    newerResponse.resolve(Response.json(projectList([conversation('c1', 'One')])));
     await newer;
 
-    olderResponse.resolve(Response.json({ conversations: [conversation('c1', 'One'), conversation('c2', 'Two stale')] }));
+    olderResponse.resolve(Response.json(projectList([conversation('c1', 'One'), conversation('c2', 'Two stale')])));
     await older;
 
     assert.match(doc.app.textContent, /One/);

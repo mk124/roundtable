@@ -31,7 +31,7 @@ export interface MessageEvent extends EventMetadata {
 /**
  * A machine-actionable system event. The only kind a passive chat room produces
  * is `quarantine-fence`, written by crash recovery when an interrupted trailing
- * write is fenced off (R20). The human-readable `body` is never parsed.
+ * write is fenced off. The human-readable `body` is never parsed.
  */
 export interface SystemEvent extends EventMetadata {
   type: 'system';
@@ -49,20 +49,34 @@ export interface SystemEventPayload {
 
 /**
  * Conversation metadata (sidecar). The `id` is never written into the
- * human-readable Markdown (R32).
+ * human-readable Markdown.
  */
 export interface ConversationMetadata {
   id: string;
   title: string;
-  /** Markdown filename: English slug + short id (R41). */
+  /** Markdown filename: English slug + short id. */
   filename: string;
   createdAt: string;
   lastActivityAt: string;
-  /** R48: set once the conversation-total storage limit is reached. */
+  /** Set once the conversation-total storage limit is reached. */
   readOnly?: boolean;
 }
 
-/* ── Size-limit outcomes (R48) ───────────────────────────────────────── */
+/**
+ * Project registration record (sidecar `project.json`). `id` is the public,
+ * URL-safe handle used in `/api/projects/:id`; `path` is the canonical absolute
+ * filesystem path and the sole authority — the encoded directory name is never
+ * the public id.
+ */
+export interface ProjectMetadata {
+  id: string;
+  path: string;
+  /** Display title: the path basename. */
+  title: string;
+  addedAt: string;
+}
+
+/* ── Size-limit outcomes ─────────────────────────────────────────────── */
 
 export type SizeLimitOutcome =
   | 'ok'
@@ -70,7 +84,7 @@ export type SizeLimitOutcome =
   | 'conversation-readonly'; //  conversation total reached → marked read-only
 
 /**
- * Byte budgets for stored content (R48). Every count is UTF-8 bytes of the
+ * Byte budgets for stored content. Every count is UTF-8 bytes of the
  * final framed text, so framing and metadata overhead are included.
  */
 export interface SizeLimits {

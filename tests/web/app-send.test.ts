@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { conversation, messageEvent, neverResponse, pendingResponse, renderApp, testView, withFetch } from './app-test-harness.ts';
+import { conversation, messageEvent, neverResponse, pendingResponse, projectList, renderApp, testView, withFetch } from './app-test-harness.ts';
 import type { TestNode } from './app-test-harness.ts';
 
 test('successful send clears the stable composer textarea', async () => {
@@ -137,7 +137,7 @@ test('pending send survives a same-conversation sidebar refresh', async () => {
       sayRequests++;
       return say.response;
     }
-    if (path === '/api/conversations') return Response.json({ conversations: [conversation()] });
+    if (path === '/api/projects') return Response.json(projectList([conversation()]));
     if (path === '/api/conversations/c1') return Response.json(testView(2));
     return Response.json(testView());
   }, async () => {
@@ -146,7 +146,7 @@ test('pending send survives a same-conversation sidebar refresh', async () => {
     oldTextarea.oninput?.();
 
     const send = browser.onSend(oldTextarea as unknown as HTMLTextAreaElement);
-    await browser.loadConversations();
+    await browser.loadProjects();
 
     const newTextarea = doc.app.querySelector<TestNode>('.composer__input')!;
     const newButton = doc.app.querySelector<TestNode>('.composer__btn')!;
@@ -367,7 +367,7 @@ test('failed send refreshes a missing conversation', async () => {
     const path = String(input);
     if (path.endsWith('/say')) return Response.json({ ok: false, error: 'unknown conversation' }, { status: 404 });
     if (path === '/api/conversations/c1') return new Response(JSON.stringify({ error: 'missing' }), { status: 404 });
-    if (path === '/api/conversations') return Response.json({ conversations: [] });
+    if (path === '/api/projects') return Response.json(projectList([]));
     return Response.json(testView());
   }, async () => {
     const textarea = doc.app.querySelector<TestNode>('.composer__input')!;

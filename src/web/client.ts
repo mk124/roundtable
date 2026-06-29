@@ -23,9 +23,20 @@ export interface ConversationDTO {
   readOnly: boolean;
 }
 
+/** A sidebar group: a registered project with its conversations embedded, already
+ *  activity-ordered by the server. `path` is the full absolute path (for hover). */
+export interface ProjectDTO {
+  id: string;
+  path: string;
+  title: string;
+  conversations: ConversationDTO[];
+}
+
 export class ConversationApi {
-  listConversations = () => this.get<{ conversations: ConversationDTO[] }>('/api/conversations');
-  createConversation = (title: string) => this.post('/api/conversations', { title });
+  listProjects = () => this.get<{ projects: ProjectDTO[] }>('/api/projects');
+  addProject = (path: string) => this.post('/api/projects', { path });
+  removeProject = (id: string) => this.send('DELETE', `/api/projects/${id}`);
+  createConversation = (projectId: string, title: string) => this.post(`/api/projects/${projectId}/conversations`, { title });
   deleteConversation = (id: string) => this.send('DELETE', `/api/conversations/${id}`);
   view = async (id: string): Promise<ViewDTO | null> => {
     const url = `/api/conversations/${id}`;

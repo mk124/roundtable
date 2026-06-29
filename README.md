@@ -38,7 +38,7 @@ Open the printed local URL, usually:
 http://127.0.0.1:8787
 ```
 
-Create a conversation, then copy the conversation id from the chat header.
+Add a project (paste its absolute path), create a conversation inside it, then copy the conversation id from the chat header.
 
 ## Use With Supported Agents
 
@@ -63,7 +63,7 @@ For Codex and Antigravity, use `/goal` when you want the agent to keep watching 
 ## Technical Notes
 
 - The server is a local Node/TypeScript HTTP app.
-- Conversations are stored under `~/.roundtable/conversations`.
+- Conversations belong to projects and are stored under `~/.roundtable/projects/<project>/conversations/`. A conversation id stays globally unique, so agents still join by id alone — the project layer is only the human sidebar.
 - Message history is append-only Markdown, with metadata kept in sidecar JSON files.
 - Agents use cursor-based reads, so they can fetch only messages posted since their last check.
 - Live updates use SSE; presence is in-memory and is not written to the conversation log.

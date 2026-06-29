@@ -126,6 +126,16 @@ function findByAttrs(node: TestNode, selector: string): TestNode | null {
   return null;
 }
 
+export function findAllByClass(node: TestNode, className: string): TestNode[] {
+  const out: TestNode[] = [];
+  const walk = (n: TestNode): void => {
+    if (n.className.split(/\s+/).includes(className)) out.push(n);
+    for (const child of n.children) walk(child);
+  };
+  walk(node);
+  return out;
+}
+
 export function findByText(node: TestNode, text: string): TestNode | null {
   if (node._text === text) return node;
   for (const child of node.children) {
@@ -152,6 +162,7 @@ function serialize(node: TestNode): string {
 export const render = (nodes: RenderNode[]) => serialize(renderContent(nodes, fakeDoc()) as unknown as TestNode);
 
 export type TestConversation = { id: string; title: string; readOnly: boolean };
+export type TestProject = { id: string; path: string; title: string; conversations: TestConversation[] };
 export type TestEvent = {
   id: string;
   type: 'message' | 'system';
@@ -161,24 +172,33 @@ export type TestEvent = {
 };
 export type TestView = { cursor: number; readOnly: boolean; events: TestEvent[] };
 type AppInternals = {
+  addProject(): Promise<void>;
   connect(id: string): void;
-  conversations: TestConversation[];
+  projects: TestProject[];
   conversationId: string | null;
+  createConversation(projectId: string): Promise<void>;
   deleteConversation(conv: TestConversation): Promise<void>;
-  loadConversations(): Promise<void>;
+  loadProjects(): Promise<void>;
   onSseDrop(controller: AbortController): void;
   onSend(textarea: HTMLTextAreaElement): Promise<void>;
   openConversation(id: string): Promise<void>;
   refresh(): Promise<boolean>;
+  removeProject(project: TestProject): Promise<void>;
   render(): void;
   sse: 'connected' | 'reconnecting' | 'disconnected';
   sseAbort: AbortController | null;
   view: TestView | null;
 };
 
-export type AppDriver = Omit<AppInternals, 'conversations'>;
+export type AppDriver = Omit<AppInternals, 'projects'>;
 
 export const conversation = (id = 'c1', title = 'Chat', readOnly = false): TestConversation => ({ id, title, readOnly });
+export const project = (id = 'p1', title = 'proj', conversations: TestConversation[] = [conversation()], path = `/${title}`): TestProject => ({
+  id,
+  path,
+  title,
+  conversations,
+});
 export const messageEvent = (value: string, id = value): TestEvent => ({
   id,
   type: 'message',
@@ -187,6 +207,12 @@ export const messageEvent = (value: string, id = value): TestEvent => ({
   content: [{ type: 'text', value }],
 });
 export const testView = (cursor = 1, events: TestEvent[] = [], readOnly = false): TestView => ({ cursor, readOnly, events });
+
+/** A `GET /api/projects` body wrapping conversations into one default project —
+ *  the shape the sidebar consumes when it reloads. */
+export const projectList = (conversations: TestConversation[], projects: TestProject[] = [project('p1', 'proj', conversations)]) => ({
+  projects,
+});
 
 export function pendingResponse(): { response: Promise<Response>; resolve: (value: Response) => void } {
   let resolve!: (value: Response) => void;
@@ -229,6 +255,20 @@ export async function withWindowTimeout<T>(run: (flush: () => void) => Promise<T
   }
 }
 
+/** Install a stub `window` carrying the given prompt/confirm/alert (and no-op
+ *  timers) for the duration of `run`. */
+export async function withWindow<T>(stub: Record<string, unknown>, run: () => Promise<T>): Promise<T> {
+  const host = globalThis as unknown as Record<string, unknown>;
+  const original = host.window;
+  host.window = { setTimeout: () => 1, clearTimeout: () => {}, setInterval: () => 1, clearInterval: () => {}, ...stub };
+  try {
+    return await run();
+  } finally {
+    if (original !== undefined) host.window = original;
+    else Reflect.deleteProperty(host, 'window');
+  }
+}
+
 export function eventStream(): { response: Response; send: (frame: string) => void } {
   const encoder = new TextEncoder();
   let controller!: ReadableStreamDefaultController<Uint8Array>;
@@ -239,14 +279,16 @@ export function eventStream(): { response: Response; send: (frame: string) => vo
   };
 }
 
-export function renderApp(opts: { conversations?: TestConversation[]; conversationId?: string | null; view?: TestView | null } = {}): {
+export function renderApp(opts: { projects?: TestProject[]; conversations?: TestConversation[]; conversationId?: string | null; view?: TestView | null } = {}): {
   browser: AppDriver;
   doc: TestDocument;
 } {
   const doc = new TestDocument();
   const app = new App(doc as unknown as Document);
   const internals = app as unknown as AppInternals;
-  internals.conversations = opts.conversations ?? [conversation()];
+  // A bare `conversations` list is a convenience for chat-behavior tests: it wraps
+  // them in one default project. Sidebar/grouping tests pass `projects` directly.
+  internals.projects = opts.projects ?? [project('p1', 'proj', opts.conversations ?? [conversation()])];
   internals.conversationId = opts.conversationId === undefined ? 'c1' : opts.conversationId;
   internals.view = opts.view === undefined ? testView() : opts.view;
   const browser = internals as AppDriver;

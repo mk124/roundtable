@@ -1,11 +1,12 @@
 import { ConversationApi, RECONNECT_DELAY_MS, streamEvents } from './client.ts';
-import type { ActivityEntry, ConversationDTO, EventDTO, ViewDTO } from './client.ts';
+import type { ActivityEntry, ConversationDTO, EventDTO, ProjectDTO, ViewDTO } from './client.ts';
 import { renderContent } from './render-content.ts';
 import { agentAccent, composerState } from './ui-state.ts';
 
 interface SidebarFocus {
   action: string;
   conversationId: string | null;
+  projectId: string | null;
 }
 
 declare const window: Window & typeof globalThis;
@@ -16,7 +17,7 @@ function main(doc: Document): void {
 
 export class App {
   private readonly api = new ConversationApi();
-  private conversations: ConversationDTO[] = [];
+  private projects: ProjectDTO[] = [];
   private conversationId: string | null = null;
   private renderedConvId: string | null = null;
   private view: ViewDTO | null = null;
@@ -31,6 +32,7 @@ export class App {
   private appliedRefreshSeq = 0;
   private listSeq = 0;
   private readonly removedConversationIds = new Set<string>();
+  private readonly collapsedProjects = new Set<string>();
   private sendError: string | null = null;
   private composerDraft = '';
   private composerVersion = 0;
@@ -46,8 +48,8 @@ export class App {
   }
 
   async start(): Promise<void> {
-    await this.loadConversations();
-    const first = this.conversations[0];
+    await this.loadProjects();
+    const first = this.firstConversation();
     if (first) await this.openConversation(first.id); // open straight into the first conversation, not an empty pane
   }
 
@@ -55,19 +57,40 @@ export class App {
     this.live.textContent = message;
   }
 
-  private async loadConversations(expected?: { id: string; epoch: number }): Promise<void> {
+  private async loadProjects(expected?: { id: string; epoch: number }): Promise<void> {
     const seq = ++this.listSeq;
-    let result: { conversations: ConversationDTO[] };
+    let result: { projects: ProjectDTO[] };
     try {
-      result = await this.api.listConversations();
+      result = await this.api.listProjects();
     } catch {
       return;
     }
-    if (seq !== this.listSeq || !Array.isArray(result?.conversations)) return;
+    if (seq !== this.listSeq || !Array.isArray(result?.projects)) return;
     if (expected && !this.isCurrentConversation(expected.id, expected.epoch)) return;
-    this.conversations = result.conversations.filter((conv) => !this.removedConversationIds.has(conv.id));
+    this.projects = result.projects.map((project) => ({
+      ...project,
+      conversations: project.conversations.filter((conv) => !this.removedConversationIds.has(conv.id)),
+    }));
     if (this.renderedConvId === this.conversationId && this.updateRenderedSidebar()) return;
     this.renderFull();
+  }
+
+  /** The most recently active conversation across all projects (the server orders
+   *  projects and their conversations by activity), or undefined when none exist. */
+  private firstConversation(): ConversationDTO | undefined {
+    for (const project of this.projects) {
+      if (project.conversations[0]) return project.conversations[0];
+    }
+    return undefined;
+  }
+
+  private findConversation(id: string | null): ConversationDTO | undefined {
+    if (id === null) return undefined;
+    for (const project of this.projects) {
+      const conv = project.conversations.find((c) => c.id === id);
+      if (conv) return conv;
+    }
+    return undefined;
   }
 
   private async openConversation(id: string): Promise<void> {
@@ -196,23 +219,29 @@ export class App {
   }
 
   private async refreshAfterMessage(id: string, epoch: number): Promise<void> {
-    if (await this.refresh() && this.isCurrentConversation(id, epoch)) await this.loadConversations({ id, epoch });
+    if (await this.refresh() && this.isCurrentConversation(id, epoch)) await this.loadProjects({ id, epoch });
   }
 
-  private clearMissingConversation(id: string): void {
-    if (this.conversationId !== id) return;
+  /** Tear down the active conversation's view + live stream, leaving no
+   *  conversation open. The caller announces the reason and re-renders. */
+  private detachConversation(): void {
     this.sseAbort?.abort();
     this.sseAbort = null;
     this.sse = 'disconnected';
     this.conversationId = null;
-    this.removeConversation(id);
     this.composerDraft = '';
     this.composerVersion++;
     this.view = null;
     this.clearActivity();
+  }
+
+  private clearMissingConversation(id: string): void {
+    if (this.conversationId !== id) return;
+    this.detachConversation();
+    this.removeConversation(id);
     this.announce('Conversation no longer exists.');
     this.render();
-    void this.loadConversations();
+    void this.loadProjects();
   }
 
   /* ── Rendering ── */
@@ -289,48 +318,120 @@ export class App {
     this.restoreSidebarFocus(focused);
 
     const title = this.root.querySelector<HTMLElement>('.chat__title');
-    const conv = this.conversations.find((c) => c.id === this.conversationId);
+    const conv = this.findConversation(this.conversationId);
     if (title) title.textContent = conv?.title ?? 'Conversation';
     return true;
   }
 
+  /** Render the sidebar: a top-level "+ Project" action, then one group per
+   *  project with its conversations and an in-project "+ New conversation". With
+   *  no projects, only the add-project action and an empty-state hint show — there
+   *  is no way to create a conversation before a project exists. */
   private fillSidebar(scroll: HTMLElement): void {
-    scroll.appendChild(el(this.doc, 'div', 'sidebar__title', 'Conversations'));
-    for (const conv of this.conversations) {
-      const row = el(this.doc, 'div', 'nav-row');
-      const item = el(this.doc, 'button', 'nav-item', conv.title) as HTMLButtonElement;
-      item.setAttribute('aria-current', String(conv.id === this.conversationId));
-      item.setAttribute('data-sidebar-action', 'open');
-      item.setAttribute('data-conversation-id', conv.id);
-      if (conv.readOnly) item.appendChild(el(this.doc, 'span', 'badge badge--readonly', 'read-only'));
-      item.onclick = () => void this.openConversation(conv.id);
-      const del = el(this.doc, 'button', 'nav-row__del', '✕') as HTMLButtonElement;
-      del.type = 'button';
-      del.title = 'Delete this conversation';
-      del.setAttribute('aria-label', `Delete ${conv.title}`);
-      del.setAttribute('data-sidebar-action', 'delete');
-      del.setAttribute('data-conversation-id', conv.id);
-      del.onclick = () => void this.deleteConversation(conv);
-      row.append(item, del);
-      scroll.appendChild(row);
+    const add = el(this.doc, 'button', 'nav-item nav-item--add', '+ Project') as HTMLButtonElement;
+    add.setAttribute('data-sidebar-action', 'add-project');
+    add.onclick = () => void this.addProject();
+    scroll.appendChild(add);
+
+    if (this.projects.length === 0) {
+      scroll.appendChild(el(this.doc, 'div', 'sidebar__empty', 'Add a project to start.'));
+      return;
     }
+
+    const labels = this.projectLabels();
+    for (const project of this.projects) {
+      scroll.appendChild(this.renderProjectGroup(project, labels.get(project.id) ?? project.title));
+    }
+  }
+
+  private renderProjectGroup(project: ProjectDTO, label: string): HTMLElement {
+    const collapsed = this.collapsedProjects.has(project.id);
+    const group = el(this.doc, 'div', collapsed ? 'project project--collapsed' : 'project');
+    const head = el(this.doc, 'div', 'project__head');
+
+    const toggle = el(this.doc, 'button', 'project__title', label) as HTMLButtonElement;
+    toggle.type = 'button';
+    toggle.setAttribute('title', project.path); // hover reveals the full absolute path
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.setAttribute('data-sidebar-action', 'toggle-project');
+    toggle.setAttribute('data-project-id', project.id);
+    toggle.onclick = () => this.toggleProject(project.id);
+
+    const remove = el(this.doc, 'button', 'project__del', '✕') as HTMLButtonElement;
+    remove.type = 'button';
+    remove.title = 'Remove this project from the list';
+    remove.setAttribute('aria-label', `Remove project ${project.title}`);
+    remove.setAttribute('data-sidebar-action', 'remove-project');
+    remove.setAttribute('data-project-id', project.id);
+    remove.onclick = () => void this.removeProject(project);
+
+    head.append(toggle, remove);
+    group.appendChild(head);
+    if (collapsed) return group; // body hidden while collapsed
+
+    for (const conv of project.conversations) group.appendChild(this.renderConversationRow(conv));
     const create = el(this.doc, 'button', 'nav-item nav-item--add', '+ New conversation') as HTMLButtonElement;
     create.setAttribute('data-sidebar-action', 'create');
-    create.onclick = () => void this.createConversation();
-    scroll.appendChild(create);
+    create.setAttribute('data-project-id', project.id);
+    create.onclick = () => void this.createConversation(project.id);
+    group.appendChild(create);
+    return group;
+  }
+
+  /** Collapse or expand a project's conversation list. State is in-memory, keyed
+   *  by project id, so it survives the sidebar's surgical re-renders. */
+  private toggleProject(projectId: string): void {
+    if (!this.collapsedProjects.delete(projectId)) this.collapsedProjects.add(projectId);
+    this.updateRenderedSidebar();
+  }
+
+  private renderConversationRow(conv: ConversationDTO): HTMLElement {
+    const row = el(this.doc, 'div', 'nav-row');
+    const item = el(this.doc, 'button', 'nav-item', conv.title) as HTMLButtonElement;
+    item.setAttribute('aria-current', String(conv.id === this.conversationId));
+    item.setAttribute('data-sidebar-action', 'open');
+    item.setAttribute('data-conversation-id', conv.id);
+    if (conv.readOnly) item.appendChild(el(this.doc, 'span', 'badge badge--readonly', 'read-only'));
+    item.onclick = () => void this.openConversation(conv.id);
+    const del = el(this.doc, 'button', 'nav-row__del', '✕') as HTMLButtonElement;
+    del.type = 'button';
+    del.title = 'Delete this conversation';
+    del.setAttribute('aria-label', `Delete ${conv.title}`);
+    del.setAttribute('data-sidebar-action', 'delete');
+    del.setAttribute('data-conversation-id', conv.id);
+    del.onclick = () => void this.deleteConversation(conv);
+    row.append(item, del);
+    return row;
+  }
+
+  /** Display label per project: the basename, or the last two path segments when
+   *  two projects share a basename. The full path always lives in the hover title,
+   *  so even deeper same-named paths stay distinguishable. */
+  private projectLabels(): Map<string, string> {
+    const byBasename = new Map<string, number>();
+    for (const project of this.projects) byBasename.set(project.title, (byBasename.get(project.title) ?? 0) + 1);
+    const labels = new Map<string, string>();
+    for (const project of this.projects) {
+      const ambiguous = (byBasename.get(project.title) ?? 0) > 1;
+      labels.set(project.id, ambiguous ? lastTwoSegments(project.path) : project.title);
+    }
+    return labels;
   }
 
   private sidebarFocus(): SidebarFocus | null {
     const active = this.doc.activeElement;
     if (!active) return null;
     const action = active.getAttribute('data-sidebar-action');
-    return action ? { action, conversationId: active.getAttribute('data-conversation-id') } : null;
+    return action
+      ? { action, conversationId: active.getAttribute('data-conversation-id'), projectId: active.getAttribute('data-project-id') }
+      : null;
   }
 
   private restoreSidebarFocus(focus: SidebarFocus | null): void {
     if (!focus) return;
-    const id = focus.conversationId;
-    const selector = id ? `[data-sidebar-action="${focus.action}"][data-conversation-id="${id}"]` : `[data-sidebar-action="${focus.action}"]`;
+    let selector = `[data-sidebar-action="${focus.action}"]`;
+    if (focus.conversationId) selector += `[data-conversation-id="${focus.conversationId}"]`;
+    if (focus.projectId) selector += `[data-project-id="${focus.projectId}"]`;
     this.root.querySelector<HTMLElement>(selector)?.focus();
   }
 
@@ -435,7 +536,7 @@ export class App {
 
   private renderHeader(): HTMLElement {
     const header = el(this.doc, 'div', 'chat__header');
-    const conv = this.conversations.find((c) => c.id === this.conversationId);
+    const conv = this.findConversation(this.conversationId);
     header.appendChild(el(this.doc, 'h1', 'chat__title', conv?.title ?? 'Conversation'));
     const id = this.conversationId;
     if (id) {
@@ -612,10 +713,41 @@ export class App {
     }
   }
 
-  private async createConversation(): Promise<void> {
+  private async addProject(): Promise<void> {
+    const path = window.prompt('Project path (absolute):');
+    if (!path) return; // cancelled or empty — no-op
+    const result = await this.api.addProject(path);
+    if (result.ok) await this.loadProjects();
+    else window.alert(result.error ?? 'Could not add that project.'); // surface the server's reason, leave the sidebar as-is
+  }
+
+  /** Deregister a project (non-destructive): its transcripts stay on disk and
+   *  re-adding the same path restores them. If the open conversation belonged to
+   *  it, fall back to no conversation. */
+  private async removeProject(project: ProjectDTO): Promise<void> {
+    if (!window.confirm(`Remove "${project.title}" from the list? Its transcripts stay on disk; re-adding the same path restores them.`)) return;
+    const result = await this.api.removeProject(project.id);
+    if (!result.ok) {
+      this.announce('Remove failed.');
+      return;
+    }
+    this.collapsedProjects.delete(project.id); // drop dead collapse state (re-adding gets a fresh id)
+    await this.loadProjects();
+    // If the open conversation belonged to the removed project it is gone now —
+    // resolve against the reloaded list (not the click-time snapshot, which may
+    // predate a conversation opened during the request) and detach if it vanished.
+    if (this.conversationId !== null && !this.findConversation(this.conversationId)) {
+      this.detachConversation();
+      this.announce('Project removed. No active conversation.');
+      this.render();
+    }
+  }
+
+  private async createConversation(projectId: string): Promise<void> {
     const title = window.prompt('Conversation title:') ?? 'Untitled';
-    const result = await this.api.createConversation(title);
-    if (result.ok) await this.loadConversations();
+    const result = await this.api.createConversation(projectId, title);
+    if (result.ok) await this.loadProjects();
+    else window.alert(result.error ?? 'Could not create conversation.'); // surface the server's reason, leave the sidebar as-is
   }
 
   private async deleteConversation(conv: ConversationDTO): Promise<void> {
@@ -627,23 +759,21 @@ export class App {
     }
     this.removeConversation(conv.id);
     if (this.conversationId === conv.id) {
-      this.sseAbort?.abort(); // close the live stream to the now-deleted conversation
-      this.conversationId = null;
-      this.composerDraft = '';
-      this.composerVersion++;
-      this.view = null;
-      this.clearActivity();
+      this.detachConversation(); // close the live stream to the now-deleted conversation
       this.render();
     } else if (this.renderedConvId === this.conversationId) {
       this.updateRenderedSidebar();
     }
     this.announce('Conversation deleted.');
-    void this.loadConversations();
+    void this.loadProjects();
   }
 
   private removeConversation(id: string): void {
     this.removedConversationIds.add(id);
-    this.conversations = this.conversations.filter((conv) => conv.id !== id);
+    this.projects = this.projects.map((project) => ({
+      ...project,
+      conversations: project.conversations.filter((conv) => conv.id !== id),
+    }));
   }
 }
 
@@ -665,6 +795,13 @@ function emptyState(doc: Document, title: string, body: string): HTMLElement {
   box.appendChild(el(doc, 'h2', undefined, title));
   if (body) box.appendChild(el(doc, 'p', 'notice', body));
   return box;
+}
+
+/** The last two segments of an absolute path (`/acme/src/web` → `src/web`), used
+ *  to disambiguate projects that share a basename. */
+function lastTwoSegments(path: string): string {
+  const parts = path.split('/').filter(Boolean);
+  return parts.slice(-2).join('/') || path;
 }
 
 const shortTime = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });

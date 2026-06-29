@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { conversation, eventStream, firstSidebarConversationId, messageEvent, neverResponse, pendingResponse, renderApp, testView, tick, withFetch } from './app-test-harness.ts';
+import { conversation, eventStream, firstSidebarConversationId, messageEvent, neverResponse, pendingResponse, projectList, renderApp, testView, tick, withFetch } from './app-test-harness.ts';
 import type { TestNode } from './app-test-harness.ts';
 
 test('successful send refreshes the sidebar order after the conversation view', async () => {
@@ -15,7 +15,7 @@ test('successful send refreshes the sidebar order after the conversation view', 
     requests.push(path);
     if (path.endsWith('/say')) return Response.json({ ok: true });
     if (path === '/api/conversations/c1') return view.response;
-    if (path === '/api/conversations') return Response.json({ conversations: [conversation('c1', 'One'), conversation('c2', 'Two')] });
+    if (path === '/api/projects') return Response.json(projectList([conversation('c1', 'One'), conversation('c2', 'Two')]));
     return Response.json(testView());
   }, async () => {
     const textarea = doc.app.querySelector<TestNode>('.composer__input')!;
@@ -25,11 +25,11 @@ test('successful send refreshes the sidebar order after the conversation view', 
     textarea.oninput?.();
     const send = browser.onSend(textarea as unknown as HTMLTextAreaElement);
     await tick();
-    assert.equal(requests.includes('/api/conversations'), false);
+    assert.equal(requests.includes('/api/projects'), false);
 
     view.resolve(Response.json(testView(2, [messageEvent('sent')])));
     await send;
-    assert.ok(requests.indexOf('/api/conversations/c1') < requests.indexOf('/api/conversations'));
+    assert.ok(requests.indexOf('/api/conversations/c1') < requests.indexOf('/api/projects'));
     assert.equal(firstSidebarConversationId(doc), 'c1');
     assert.match(doc.app.querySelector<TestNode>('.chat__messages')!.textContent, /sent/);
   });
@@ -48,7 +48,7 @@ test('live message refreshes the sidebar order after the conversation view', asy
     requests.push(path);
     if (path === '/api/conversations/c1/events') return stream.response;
     if (path === '/api/conversations/c1') return view.response;
-    if (path === '/api/conversations') return Response.json({ conversations: [conversation('c1', 'One'), conversation('c2', 'Two')] });
+    if (path === '/api/projects') return Response.json(projectList([conversation('c1', 'One'), conversation('c2', 'Two')]));
     return Response.json(testView());
   }, async () => {
     assert.equal(firstSidebarConversationId(doc), 'c2');
@@ -57,12 +57,12 @@ test('live message refreshes the sidebar order after the conversation view', asy
     await tick();
     stream.send('data: {"cursor":2}\n\n');
     await tick();
-    assert.equal(requests.includes('/api/conversations'), false);
+    assert.equal(requests.includes('/api/projects'), false);
 
     view.resolve(Response.json(testView(2, [messageEvent('live')])));
     await tick();
     await tick();
-    assert.ok(requests.indexOf('/api/conversations/c1') < requests.indexOf('/api/conversations'));
+    assert.ok(requests.indexOf('/api/conversations/c1') < requests.indexOf('/api/projects'));
     assert.equal(firstSidebarConversationId(doc), 'c1');
     assert.match(doc.app.querySelector<TestNode>('.chat__messages')!.textContent, /live/);
   });
@@ -83,13 +83,13 @@ test('stale overlapping live refreshes do not replace newer sidebar order', asyn
     const path = String(input);
     if (path === '/api/conversations/c1/events') return stream.response;
     if (path === '/api/conversations/c1') return views.shift() ?? Response.json(testView());
-    if (path === '/api/conversations') {
+    if (path === '/api/projects') {
       listRequests++;
-      return Response.json({
-        conversations: listRequests === 1
+      return Response.json(projectList(
+        listRequests === 1
           ? [conversation('c1', 'One'), conversation('c2', 'Two')]
           : [conversation('c2', 'Two stale'), conversation('c1', 'One')],
-      });
+      ));
     }
     return Response.json(testView());
   }, async () => {
@@ -135,9 +135,9 @@ test('stale same-id send refresh does not reload the sidebar after reopening', a
       return Response.json(testView(3, [messageEvent('reopened')]));
     }
     if (path === '/api/conversations/c2') return Response.json(testView(2, [messageEvent('away')]));
-    if (path === '/api/conversations') {
+    if (path === '/api/projects') {
       listRequests++;
-      return Response.json({ conversations: [conversation('c1', 'One'), conversation('c2', 'Two')] });
+      return Response.json(projectList([conversation('c1', 'One'), conversation('c2', 'Two')]));
     }
     if (path.endsWith('/events')) return neverResponse();
     return Response.json(testView());
@@ -182,11 +182,11 @@ test('stale same-id sidebar response is ignored after reopening', async () => {
       return Response.json(testView(3, [messageEvent('reopened')]));
     }
     if (path === '/api/conversations/c2') return Response.json(testView(2, [messageEvent('away')]));
-    if (path === '/api/conversations') {
+    if (path === '/api/projects') {
       listRequests++;
       return listRequests === 1
         ? staleList.response
-        : Response.json({ conversations: [conversation('c1', 'One'), conversation('c2', 'Two')] });
+        : Response.json(projectList([conversation('c1', 'One'), conversation('c2', 'Two')]));
     }
     if (path.endsWith('/events')) return neverResponse();
     return Response.json(testView());
@@ -204,7 +204,7 @@ test('stale same-id sidebar response is ignored after reopening', async () => {
     await browser.openConversation('c2');
     await browser.openConversation('c1');
 
-    staleList.resolve(Response.json({ conversations: [conversation('c1', 'One'), conversation('c2', 'Two')] }));
+    staleList.resolve(Response.json(projectList([conversation('c1', 'One'), conversation('c2', 'Two')])));
     await send;
     await tick();
 

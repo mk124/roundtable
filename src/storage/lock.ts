@@ -37,7 +37,7 @@ function sameOwner(a: LockOwner | null, b: LockOwner): boolean {
 }
 
 /**
- * Single-writer guard over ~/.roundtable (R20). Ownership is an atomic directory
+ * Single-writer guard over ~/.roundtable. Ownership is an atomic directory
  * create; a stale lock is taken over only when its owner is on this host and its
  * pid is confirmed dead. Anything uncertain fails closed (returns null) so a
  * second instance never writes to the same store concurrently.
