@@ -28,6 +28,11 @@ interface ActivityEntry {
   since: string;
 }
 
+interface SidebarFocus {
+  action: string;
+  conversationId: string | null;
+}
+
 /* ── Testable safe rendering (R28, AE13) ───────────────────────────────── */
 
 /**
@@ -120,7 +125,7 @@ export function agentAccent(author: string | undefined): 'claude' | 'gpt' | 'gem
   return null;
 }
 
-/* ── Below this point is browser-only wiring (manually verified) ────────── */
+/* ── Below this point is browser-only wiring ───────────────────────────── */
 
 declare const window: Window & typeof globalThis;
 
@@ -128,12 +133,19 @@ class Api {
   listConversations = () => this.get<{ conversations: ConversationDTO[] }>('/api/conversations');
   createConversation = (title: string) => this.post('/api/conversations', { title });
   deleteConversation = (id: string) => this.send('DELETE', `/api/conversations/${id}`);
-  view = (id: string) => this.get<ViewDTO>(`/api/conversations/${id}`);
+  view = async (id: string): Promise<ViewDTO | null> => {
+    const url = `/api/conversations/${id}`;
+    const res = await fetch(url);
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`GET ${url} failed`);
+    return (await res.json()) as ViewDTO;
+  };
   say = (id: string, text: string) => this.post(`/api/conversations/${id}/say`, { author: 'user', text });
 
-  private async get<T>(url: string): Promise<T | null> {
+  private async get<T>(url: string): Promise<T> {
     const res = await fetch(url);
-    return res.ok ? ((await res.json()) as T) : null;
+    if (!res.ok) throw new Error(`GET ${url} failed`);
+    return (await res.json()) as T;
   }
   private post(url: string, body: unknown): Promise<{ ok: boolean; error?: string }> {
     return this.send('POST', url, body);
@@ -155,6 +167,7 @@ class Api {
 const RECONNECT_DELAY_MS = 2000;
 
 export interface StreamHandlers {
+  onOpen?: () => void;
   onMessage: () => void;
   onActivity: (active: ActivityEntry[]) => void;
   onMissing: () => void;
@@ -180,6 +193,7 @@ export async function streamEvents(id: string, lastEventId: number, signal: Abor
     handlers.onDrop();
     return;
   }
+  handlers.onOpen?.();
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
@@ -240,8 +254,15 @@ export class App {
   private activityTimer: number | null = null;
   private sse: 'connected' | 'reconnecting' | 'disconnected' = 'disconnected';
   private sseAbort: AbortController | null = null;
+  private conversationEpoch = 0;
+  private refreshSeq = 0;
+  private appliedRefreshSeq = 0;
+  private listSeq = 0;
+  private readonly removedConversationIds = new Set<string>();
   private sendError: string | null = null;
   private composerDraft = '';
+  private composerVersion = 0;
+  private readonly sendingByConversation = new Map<string, number>();
   private readonly root: HTMLElement;
   private readonly live: HTMLElement;
   private readonly doc: Document;
@@ -263,18 +284,58 @@ export class App {
   }
 
   private async loadConversations(): Promise<void> {
-    this.conversations = (await this.api.listConversations())?.conversations ?? [];
-    this.render();
+    const seq = ++this.listSeq;
+    let result: { conversations: ConversationDTO[] };
+    try {
+      result = await this.api.listConversations();
+    } catch {
+      return;
+    }
+    if (seq !== this.listSeq) return;
+    this.conversations = result.conversations.filter((conv) => !this.removedConversationIds.has(conv.id));
+    if (this.renderedConvId === this.conversationId && this.updateRenderedSidebar()) return;
+    this.renderFull();
   }
 
   private async openConversation(id: string): Promise<void> {
+    if (id === this.conversationId && this.view && this.renderedConvId === id) {
+      await this.refresh();
+      if (this.conversationId === id && this.view && (!this.sseAbort || this.sse !== 'connected')) this.connect(id);
+      return;
+    }
+    this.sseAbort?.abort();
+    this.sseAbort = null;
     this.conversationId = id;
+    this.conversationEpoch++;
+    const epoch = this.conversationEpoch;
+    this.view = null;
+    this.renderedConvId = null;
     this.composerDraft = '';
+    this.composerVersion++;
     this.sendError = null;
     this.clearActivity();
     this.sse = 'connected';
-    await this.refresh(); // a single render, already reflecting the connected state
-    if (this.conversationId === id && this.view) this.connect(id);
+    this.render();
+    await this.refresh();
+    if (this.conversationId !== id || this.conversationEpoch !== epoch) return;
+    if (this.view) this.connect(id);
+    else this.retryOpen(id, epoch);
+  }
+
+  private retryOpen(id: string, epoch: number): void {
+    this.sse = 'reconnecting';
+    this.render();
+    window.setTimeout(() => {
+      void this.retryOpenNow(id, epoch);
+    }, RECONNECT_DELAY_MS);
+  }
+
+  private async retryOpenNow(id: string, epoch: number): Promise<void> {
+    if (this.conversationId !== id || this.conversationEpoch !== epoch || this.view) return;
+    await this.refresh();
+    if (this.conversationId !== id || this.conversationEpoch !== epoch) return;
+    if (this.view) this.connect(id);
+    else this.retryOpen(id, epoch);
   }
 
   private connect(id: string): void {
@@ -282,15 +343,26 @@ export class App {
     const controller = new AbortController();
     this.sseAbort = controller;
     void streamEvents(id, this.view?.cursor ?? 0, controller.signal, {
-      onMessage: () => void this.refresh(),
-      onActivity: (active) => this.onActivity(active),
-      onMissing: () => this.clearMissingConversation(id),
+      onOpen: () => {
+        if (controller.signal.aborted || this.sseAbort !== controller || this.conversationId !== id) return;
+        this.sse = 'connected';
+        this.render();
+      },
+      onMessage: () => {
+        if (!controller.signal.aborted && this.conversationId === id) void this.refresh();
+      },
+      onActivity: (active) => {
+        if (!controller.signal.aborted && this.conversationId === id) this.onActivity(active);
+      },
+      onMissing: () => {
+        if (!controller.signal.aborted && this.sseAbort === controller && this.conversationId === id) this.clearMissingConversation(id);
+      },
       onDrop: () => this.onSseDrop(controller),
     });
   }
 
   private onSseDrop(controller: AbortController): void {
-    if (controller.signal.aborted) return; // closed deliberately (switch/delete) — don't reconnect
+    if (controller.signal.aborted || this.sseAbort !== controller) return; // closed deliberately (switch/delete) — don't reconnect
     this.sse = 'reconnecting';
     this.render();
     const id = this.conversationId;
@@ -298,7 +370,7 @@ export class App {
     // Delay the retry so a server restart or a vanished conversation can't spin a
     // tight reconnect loop; skip if we switched away or aborted in the meantime.
     window.setTimeout(() => {
-      if (!controller.signal.aborted && this.conversationId === id) this.connect(id);
+      if (!controller.signal.aborted && this.sseAbort === controller && this.conversationId === id) this.connect(id);
     }, RECONNECT_DELAY_MS);
   }
 
@@ -317,9 +389,33 @@ export class App {
   private async refresh(): Promise<void> {
     if (!this.conversationId) return;
     const id = this.conversationId;
-    const view = await this.api.view(id);
-    if (!view) return this.clearMissingConversation(id);
+    const epoch = this.conversationEpoch;
+    const seq = ++this.refreshSeq;
+    let view: ViewDTO | null;
+    try {
+      view = await this.api.view(id);
+    } catch {
+      return;
+    }
+    if (this.conversationId !== id) return;
+    if (this.conversationEpoch !== epoch) return;
+    if (!view) {
+      if (seq < this.appliedRefreshSeq) return;
+      return this.clearMissingConversation(id);
+    }
+    if (this.view) {
+      if (view.cursor < this.view.cursor) return;
+      if (view.cursor === this.view.cursor && this.view.readOnly && !view.readOnly) return;
+      if (seq < this.appliedRefreshSeq && view.cursor === this.view.cursor) {
+        if (view.readOnly && !this.view.readOnly) {
+          this.view = { ...this.view, readOnly: true };
+          this.render();
+        }
+        return;
+      }
+    }
     this.view = view;
+    this.appliedRefreshSeq = Math.max(this.appliedRefreshSeq, seq);
     this.render();
   }
 
@@ -329,22 +425,34 @@ export class App {
     this.sseAbort = null;
     this.sse = 'disconnected';
     this.conversationId = null;
+    this.removeConversation(id);
     this.composerDraft = '';
+    this.composerVersion++;
     this.view = null;
     this.clearActivity();
     this.announce('Conversation no longer exists.');
+    this.render();
     void this.loadConversations();
   }
 
   /* ── Rendering ── */
 
-  /** A full re-render tears down the scroll container, so capture the reader's
-   *  place first: stay pinned to the bottom (the chat default) unless they've
-   *  scrolled up within the *same* conversation to read history. */
   private render(): void {
+    if (this.conversationId && this.view && this.renderedConvId === this.conversationId) {
+      if (this.updateRenderedChat(this.view)) return;
+    }
+    this.renderFull();
+  }
+
+  /** A full re-render is only for structural changes such as opening a
+   *  conversation. Live updates reuse the existing composer textarea. */
+  private renderFull(): void {
     const log = this.root.querySelector<HTMLElement>('.chat__log');
-    const keepPosition = log !== null && this.renderedConvId === this.conversationId && !atBottom(log);
+    const sidebarScroll = this.root.querySelector<HTMLElement>('.sidebar__scroll');
+    const sameConversation = this.renderedConvId === this.conversationId;
+    const keepPosition = log !== null && sameConversation && !atBottom(log);
     const prevTop = log?.scrollTop ?? 0;
+    const prevSidebarTop = sidebarScroll?.scrollTop ?? 0;
 
     this.root.setAttribute('aria-busy', 'false');
     this.root.textContent = '';
@@ -357,55 +465,119 @@ export class App {
     this.renderedConvId = this.conversationId;
 
     const newLog = this.root.querySelector<HTMLElement>('.chat__log');
+    const newSidebarScroll = this.root.querySelector<HTMLElement>('.sidebar__scroll');
     if (newLog) {
       newLog.scrollTop = keepPosition ? prevTop : newLog.scrollHeight;
       this.updateJumpToBottom(newLog);
     }
+    if (newSidebarScroll && sameConversation) newSidebarScroll.scrollTop = prevSidebarTop;
+  }
+
+  private updateRenderedChat(view: ViewDTO): boolean {
+    const banners = this.root.querySelector<HTMLElement>('.chat__banners');
+    const log = this.root.querySelector<HTMLElement>('.chat__log');
+    const messages = this.root.querySelector<HTMLElement>('.chat__messages');
+    if (!banners || !log || !messages) return false;
+
+    const keepPosition = !atBottom(log);
+    const prevTop = log.scrollTop;
+    this.fillBanners(banners, view);
+    this.fillMessages(messages, view.events);
+    this.updateComposer(view);
+    this.fillActivity();
+    log.scrollTop = keepPosition ? prevTop : log.scrollHeight;
+    this.updateJumpToBottom(log);
+    return true;
   }
 
   private renderSidebar(): HTMLElement {
     const aside = el(this.doc, 'aside', 'sidebar');
     const scroll = el(this.doc, 'div', 'sidebar__scroll');
+    this.fillSidebar(scroll);
+    aside.appendChild(scroll);
+    return aside;
+  }
+
+  private updateRenderedSidebar(): boolean {
+    const scroll = this.root.querySelector<HTMLElement>('.sidebar__scroll');
+    if (!scroll) return false;
+    const focused = this.sidebarFocus();
+    const scrollTop = scroll.scrollTop;
+    scroll.textContent = '';
+    this.fillSidebar(scroll);
+    scroll.scrollTop = scrollTop;
+    this.restoreSidebarFocus(focused);
+
+    const title = this.root.querySelector<HTMLElement>('.chat__title');
+    const conv = this.conversations.find((c) => c.id === this.conversationId);
+    if (title) title.textContent = conv?.title ?? 'Conversation';
+    return true;
+  }
+
+  private fillSidebar(scroll: HTMLElement): void {
     scroll.appendChild(el(this.doc, 'div', 'sidebar__title', 'Conversations'));
     for (const conv of this.conversations) {
       const row = el(this.doc, 'div', 'nav-row');
       const item = el(this.doc, 'button', 'nav-item', conv.title) as HTMLButtonElement;
       item.setAttribute('aria-current', String(conv.id === this.conversationId));
+      item.setAttribute('data-sidebar-action', 'open');
+      item.setAttribute('data-conversation-id', conv.id);
       if (conv.readOnly) item.appendChild(el(this.doc, 'span', 'badge badge--readonly', 'read-only'));
       item.onclick = () => void this.openConversation(conv.id);
       const del = el(this.doc, 'button', 'nav-row__del', '✕') as HTMLButtonElement;
       del.type = 'button';
       del.title = 'Delete this conversation';
       del.setAttribute('aria-label', `Delete ${conv.title}`);
+      del.setAttribute('data-sidebar-action', 'delete');
+      del.setAttribute('data-conversation-id', conv.id);
       del.onclick = () => void this.deleteConversation(conv);
       row.append(item, del);
       scroll.appendChild(row);
     }
     const create = el(this.doc, 'button', 'nav-item nav-item--add', '+ New conversation') as HTMLButtonElement;
+    create.setAttribute('data-sidebar-action', 'create');
     create.onclick = () => void this.createConversation();
     scroll.appendChild(create);
-    aside.appendChild(scroll);
-    return aside;
+  }
+
+  private sidebarFocus(): SidebarFocus | null {
+    const active = this.doc.activeElement;
+    if (!active) return null;
+    const action = active.getAttribute('data-sidebar-action');
+    return action ? { action, conversationId: active.getAttribute('data-conversation-id') } : null;
+  }
+
+  private restoreSidebarFocus(focus: SidebarFocus | null): void {
+    if (!focus) return;
+    const id = focus.conversationId;
+    const selector = id ? `[data-sidebar-action="${focus.action}"][data-conversation-id="${id}"]` : `[data-sidebar-action="${focus.action}"]`;
+    this.root.querySelector<HTMLElement>(selector)?.focus();
   }
 
   private renderMain(): HTMLElement {
     if (this.conversationId && this.view) return this.renderChat(this.view);
     const main = el(this.doc, 'section', 'chat');
-    main.appendChild(emptyState(this.doc, 'No conversation open', 'Select or create a conversation. Any local HTTP client can post here as any author.'));
+    if (this.conversationId) {
+      main.appendChild(emptyState(this.doc, this.sse === 'reconnecting' ? 'Reconnecting' : 'Loading conversation', ''));
+    } else {
+      main.appendChild(emptyState(this.doc, 'No conversation open', 'Select or create a conversation. Any local HTTP client can post here as any author.'));
+    }
     return main;
   }
 
   private renderChat(view: ViewDTO): HTMLElement {
     const main = el(this.doc, 'section', 'chat');
     main.appendChild(this.renderHeader());
-    if (view.readOnly) main.appendChild(el(this.doc, 'div', 'banner banner--warn', 'Conversation storage limit reached — read-only.'));
-    if (this.sse === 'reconnecting') main.appendChild(el(this.doc, 'div', 'banner banner--info', 'Reconnecting to live updates…'));
+
+    const banners = el(this.doc, 'div', 'chat__banners');
+    this.fillBanners(banners, view);
+    main.appendChild(banners);
 
     const log = el(this.doc, 'div', 'chat__log');
     log.onscroll = () => this.updateJumpToBottom(log);
     const messages = el(this.doc, 'div', 'chat__messages');
     messages.setAttribute('role', 'log');
-    for (const event of view.events) messages.appendChild(this.renderEvent(event));
+    this.fillMessages(messages, view.events);
     log.appendChild(messages);
 
     const dock = el(this.doc, 'div', 'chat__dock');
@@ -419,6 +591,18 @@ export class App {
     log.appendChild(dock);
     main.appendChild(log);
     return main;
+  }
+
+  private fillMessages(messages: HTMLElement, events: EventDTO[]): void {
+    const existing = Array.from(messages.children) as HTMLElement[];
+    const appendOnly =
+      existing.length <= events.length && existing.every((node, index) => node.getAttribute('data-event-id') === events[index]?.id);
+    if (appendOnly) {
+      for (const event of events.slice(existing.length)) messages.appendChild(this.renderEvent(event));
+      return;
+    }
+    messages.textContent = '';
+    for (const event of events) messages.appendChild(this.renderEvent(event));
   }
 
   private renderJumpToBottom(log: HTMLElement): HTMLButtonElement {
@@ -483,6 +667,16 @@ export class App {
     return header;
   }
 
+  private fillBanners(host: HTMLElement, view: ViewDTO): void {
+    host.textContent = '';
+    if (view.readOnly) {
+      host.appendChild(el(this.doc, 'div', 'banner banner--warn', 'Conversation storage limit reached — read-only.'));
+    }
+    if (this.sse === 'reconnecting') {
+      host.appendChild(el(this.doc, 'div', 'banner banner--info', 'Reconnecting to live updates…'));
+    }
+  }
+
   private async copyId(btn: HTMLButtonElement, id: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(id);
@@ -497,6 +691,7 @@ export class App {
   private renderEvent(event: EventDTO): HTMLElement {
     if (event.type === 'system') {
       const box = el(this.doc, 'article', 'msg msg--system');
+      box.setAttribute('data-event-id', event.id);
       const body = el(this.doc, 'div', 'msg__body');
       if (event.content) body.appendChild(renderContent(event.content, this.doc));
       box.appendChild(body);
@@ -505,6 +700,7 @@ export class App {
     const isUser = event.author === 'user';
     const accent = isUser ? null : agentAccent(event.author);
     const box = el(this.doc, 'article', `msg ${isUser ? 'msg--user' : 'msg--agent'}${accent ? ` msg--${accent}` : ''}`);
+    box.setAttribute('data-event-id', event.id);
     box.appendChild(el(this.doc, 'div', 'msg__role', event.author ?? 'agent'));
     const body = el(this.doc, 'div', 'msg__body');
     if (event.content) body.appendChild(renderContent(event.content, this.doc));
@@ -524,11 +720,14 @@ export class App {
     textarea.disabled = state.disabled;
     textarea.placeholder = state.disabled ? (state.reason ?? '') : 'Type a message...';
     textarea.value = this.composerDraft;
-    textarea.oninput = () => (this.composerDraft = textarea.value);
+    textarea.oninput = () => {
+      this.composerDraft = textarea.value;
+      this.composerVersion++;
+    };
 
     const btn = el(this.doc, 'button', 'composer__btn', '↑') as HTMLButtonElement;
     btn.setAttribute('aria-label', 'Send');
-    btn.disabled = state.disabled;
+    btn.disabled = state.disabled || this.isSendingCurrentConversation();
     btn.onclick = () => void this.onSend(textarea);
 
     textarea.onkeydown = (e) => {
@@ -538,6 +737,7 @@ export class App {
         e.preventDefault();
         insertNewline(textarea); // Alt+Enter inserts a newline
         this.composerDraft = textarea.value;
+        this.composerVersion++;
       } else if (!e.shiftKey) {
         e.preventDefault(); // Enter sends; Shift+Enter keeps the native newline
         if (!state.disabled) void this.onSend(textarea);
@@ -550,21 +750,74 @@ export class App {
     return composer;
   }
 
+  private updateComposer(view: ViewDTO): void {
+    const state = composerState({ hasConversation: !!this.conversationId, readOnly: view.readOnly });
+    const textarea = this.root.querySelector<HTMLTextAreaElement>('.composer__input');
+    const button = this.root.querySelector<HTMLButtonElement>('.composer__btn');
+    const error = this.root.querySelector<HTMLElement>('.field-error');
+    if (textarea) {
+      textarea.disabled = state.disabled;
+      textarea.placeholder = state.disabled ? (state.reason ?? '') : 'Type a message...';
+    }
+    if (button) button.disabled = state.disabled || this.isSendingCurrentConversation();
+    if (error) error.textContent = this.sendError ?? '';
+  }
+
+  private isSendingCurrentConversation(): boolean {
+    return this.conversationId !== null && this.sendingByConversation.get(this.conversationId) === this.conversationEpoch;
+  }
+
+  private isCurrentConversation(id: string, epoch: number): boolean {
+    return this.conversationId === id && this.conversationEpoch === epoch;
+  }
+
   /* ── Actions ── */
 
   private async onSend(textarea: HTMLTextAreaElement): Promise<void> {
+    if (this.root.querySelector<HTMLTextAreaElement>('.composer__input') !== textarea) return;
     const text = textarea.value;
     this.composerDraft = text;
     if (!text.trim() || !this.conversationId) return;
-    const result = await this.api.say(this.conversationId, text);
+    const id = this.conversationId;
+    const epoch = this.conversationEpoch;
+    if (this.sendingByConversation.get(id) === epoch) return;
+    const version = this.composerVersion;
+    this.sendingByConversation.set(id, epoch);
+    if (this.view) this.updateComposer(this.view);
+    let result: { ok: boolean; error?: string };
+    try {
+      result = await this.api.say(id, text);
+    } catch {
+      if (this.isCurrentConversation(id, epoch)) {
+        this.sendError = 'Send failed. Check your connection and try again.';
+        this.render();
+      }
+      return;
+    } finally {
+      if (this.sendingByConversation.get(id) === epoch) {
+        this.sendingByConversation.delete(id);
+        if (this.view && this.conversationId === id) this.updateComposer(this.view);
+      }
+    }
+    if (!this.isCurrentConversation(id, epoch)) {
+      return;
+    }
+    const currentTextarea = this.root.querySelector<HTMLTextAreaElement>('.composer__input');
     if (result.ok) {
-      this.composerDraft = '';
+      if (this.composerVersion === version && currentTextarea?.value === text) {
+        this.composerDraft = '';
+        currentTextarea.value = '';
+        this.composerVersion++;
+      } else if (currentTextarea) {
+        this.composerDraft = currentTextarea.value;
+      }
       this.sendError = null;
       this.announce('Message sent.');
       await this.refresh();
     } else {
       this.sendError = result.error ?? 'Message rejected.';
       this.render();
+      await this.refresh();
     }
   }
 
@@ -581,15 +834,25 @@ export class App {
       this.announce('Delete failed.');
       return;
     }
+    this.removeConversation(conv.id);
     if (this.conversationId === conv.id) {
       this.sseAbort?.abort(); // close the live stream to the now-deleted conversation
       this.conversationId = null;
       this.composerDraft = '';
+      this.composerVersion++;
       this.view = null;
       this.clearActivity();
+      this.render();
+    } else if (this.renderedConvId === this.conversationId) {
+      this.updateRenderedSidebar();
     }
     this.announce('Conversation deleted.');
-    await this.loadConversations();
+    void this.loadConversations();
+  }
+
+  private removeConversation(id: string): void {
+    this.removedConversationIds.add(id);
+    this.conversations = this.conversations.filter((conv) => conv.id !== id);
   }
 }
 
@@ -609,7 +872,7 @@ function atBottom(log: HTMLElement): boolean {
 function emptyState(doc: Document, title: string, body: string): HTMLElement {
   const box = el(doc, 'div', 'empty');
   box.appendChild(el(doc, 'h2', undefined, title));
-  box.appendChild(el(doc, 'p', 'notice', body));
+  if (body) box.appendChild(el(doc, 'p', 'notice', body));
   return box;
 }
 
