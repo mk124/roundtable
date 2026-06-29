@@ -152,15 +152,16 @@ export function createServer(deps: ServerDeps): http.Server {
   }
 
   async function serveStatic(pathname: string, res: http.ServerResponse): Promise<void> {
-    if (!deps.staticDir) return notFound(res);
+    const staticDir = deps.staticDir;
+    if (!staticDir) return notFound(res);
     const rel = pathname === '/' ? 'index.html' : pathname.slice(1);
     if (rel.includes('..')) return notFound(res);
     try {
-      if (rel === 'app.js') {
-        const source = await readFile(join(deps.staticDir, 'app.ts'), 'utf8');
+      if (rel === 'app.js' || rel.endsWith('.ts')) {
+        const source = await readFile(join(staticDir, rel === 'app.js' ? 'app.ts' : rel), 'utf8');
         return sendText(res, 200, stripTypeScriptTypes(source), 'application/javascript');
       }
-      const body = await readFile(join(deps.staticDir, rel), 'utf8');
+      const body = await readFile(join(staticDir, rel), 'utf8');
       const type = rel.endsWith('.css') ? 'text/css' : rel.endsWith('.js') ? 'application/javascript' : 'text/html';
       return sendText(res, 200, body, type);
     } catch {

@@ -1,4 +1,5 @@
-import { App, renderContent } from '../../src/web/app.ts';
+import { App } from '../../src/web/app.ts';
+import { renderContent } from '../../src/web/render-content.ts';
 import type { RenderNode } from '../../src/server/render.ts';
 
 /* A minimal DOM substitute, enough for rendering and App interaction tests without

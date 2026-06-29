@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { agentAccent, composerState, renderContent } from '../../src/web/app.ts';
+import { renderContent } from '../../src/web/render-content.ts';
+import { agentAccent, composerState } from '../../src/web/ui-state.ts';
 import { fakeDoc, render } from './app-test-harness.ts';
 import type { TestNode } from './app-test-harness.ts';
 

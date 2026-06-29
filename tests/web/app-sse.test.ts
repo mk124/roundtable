@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { streamEvents } from '../../src/web/app.ts';
+import { streamEvents } from '../../src/web/client.ts';
 import { conversation, eventStream, messageEvent, pendingResponse, renderApp, testView, tick, withFetch, withWindowTimeout } from './app-test-harness.ts';
 import type { TestNode } from './app-test-harness.ts';
 

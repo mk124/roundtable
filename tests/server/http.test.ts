@@ -292,6 +292,8 @@ test('createServer refuses a non-loopback bind host', () => {
 test('serveStatic serves files, refuses path traversal, and 404s the unknown', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'rt-static-'));
   await writeFile(join(dir, 'index.html'), '<!doctype html><title>ok</title>');
+  await writeFile(join(dir, 'app.ts'), "import { ok } from './client.ts';\nconst label: string = ok;\n");
+  await writeFile(join(dir, 'client.ts'), "export const ok: string = 'ok';\n");
   const port = await freePort();
   const server = createServer({ app: fakeApp(), logger: new RedactingLogger({ write() {} }), bindHost: '127.0.0.1', port, staticDir: dir });
   await new Promise<void>((r) => server.listen(port, '127.0.0.1', () => r()));
@@ -300,6 +302,15 @@ test('serveStatic serves files, refuses path traversal, and 404s the unknown', a
     const index = await fetch(`${origin}/`);
     assert.equal(index.status, 200);
     assert.match(index.headers.get('content-type') ?? '', /text\/html/);
+
+    const appBody = await (await fetch(`${origin}/app.js`)).text();
+    assert.match(appBody, /import \{ ok \} from '\.\/client\.ts'/);
+    assert.doesNotMatch(appBody, /: string/);
+
+    const clientTs = await fetch(`${origin}/client.ts`);
+    assert.equal(clientTs.status, 200);
+    assert.match(clientTs.headers.get('content-type') ?? '', /application\/javascript/);
+    assert.match(await clientTs.text(), /export const ok/);
 
     const traversal = await fetch(`${origin}/..%2f..%2fpackage.json`);
     assert.equal(traversal.status, 404); // the '..' guard keeps reads inside staticDir
