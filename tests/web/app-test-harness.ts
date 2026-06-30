@@ -21,6 +21,7 @@ export class TestNode {
   scrollTop = 0;
   selectionEnd = 0;
   selectionStart = 0;
+  title = '';
   value = '';
   _text = '';
   readonly tag: string;
@@ -73,6 +74,9 @@ export class TestDocument {
   activeElement: TestNode | null = null;
   readonly app = new TestNode('div');
   readonly live = new TestNode('div');
+
+  addEventListener(): void {}
+  removeEventListener(): void {}
 
   createDocumentFragment(): TestNode {
     return new TestNode('#fragment', this);
@@ -134,15 +138,6 @@ export function findAllByClass(node: TestNode, className: string): TestNode[] {
   };
   walk(node);
   return out;
-}
-
-export function findByText(node: TestNode, text: string): TestNode | null {
-  if (node._text === text) return node;
-  for (const child of node.children) {
-    const found = findByText(child, text);
-    if (found) return found;
-  }
-  return null;
 }
 
 export function firstSidebarConversationId(doc: { app: TestNode }): string | null {
@@ -208,51 +203,10 @@ export const messageEvent = (value: string, id = value): TestEvent => ({
 });
 export const testView = (cursor = 1, events: TestEvent[] = [], readOnly = false): TestView => ({ cursor, readOnly, events });
 
-/** A `GET /api/projects` body wrapping conversations into one default project —
- *  the shape the sidebar consumes when it reloads. */
-export const projectList = (conversations: TestConversation[], projects: TestProject[] = [project('p1', 'proj', conversations)]) => ({
-  projects,
-});
-
 export function pendingResponse(): { response: Promise<Response>; resolve: (value: Response) => void } {
   let resolve!: (value: Response) => void;
   const response = new Promise<Response>((done) => (resolve = done));
   return { response, resolve };
-}
-
-export const neverResponse = (): Promise<Response> => new Promise<Response>(() => {});
-
-export async function withWindowTimeout<T>(run: (flush: () => void) => Promise<T>): Promise<T> {
-  type WindowTimeoutStub = {
-    clearInterval(): void;
-    setInterval(): number;
-    setTimeout(callback: () => void): number;
-  };
-  const host = globalThis as unknown as Record<string, unknown>;
-  const originalWindow = host.window;
-  let scheduled: (() => void) | null = null;
-  host.window = {
-    clearInterval() {},
-    setInterval() {
-      return 1;
-    },
-    setTimeout(callback: () => void) {
-      scheduled = () => {
-        callback();
-      };
-      return 1;
-    },
-  } satisfies WindowTimeoutStub;
-  try {
-    return await run(() => {
-      const callback = scheduled;
-      scheduled = null;
-      callback?.();
-    });
-  } finally {
-    if (originalWindow !== undefined) host.window = originalWindow;
-    else Reflect.deleteProperty(host, 'window');
-  }
 }
 
 /** Install a stub `window` carrying the given prompt/confirm/alert (and no-op
@@ -267,16 +221,6 @@ export async function withWindow<T>(stub: Record<string, unknown>, run: () => Pr
     if (original !== undefined) host.window = original;
     else Reflect.deleteProperty(host, 'window');
   }
-}
-
-export function eventStream(): { response: Response; send: (frame: string) => void } {
-  const encoder = new TextEncoder();
-  let controller!: ReadableStreamDefaultController<Uint8Array>;
-  const body = new ReadableStream<Uint8Array>({ start: (stream) => (controller = stream) });
-  return {
-    response: new Response(body),
-    send: (frame) => controller.enqueue(encoder.encode(frame)),
-  };
 }
 
 export function renderApp(opts: { projects?: TestProject[]; conversations?: TestConversation[]; conversationId?: string | null; view?: TestView | null } = {}): {

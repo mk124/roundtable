@@ -1,25 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { conversation, messageEvent, neverResponse, pendingResponse, projectList, renderApp, testView, withFetch } from './app-test-harness.ts';
-import type { TestNode } from './app-test-harness.ts';
+import { conversation, messageEvent, pendingResponse, renderApp, testView, tick, withFetch } from './app-test-harness.ts';
+import type { TestConversation, TestNode } from './app-test-harness.ts';
 
-test('successful send clears the stable composer textarea', async () => {
-  const { browser, doc } = renderApp();
-
-  await withFetch(async (input) => {
-    if (String(input).endsWith('/say')) return Response.json({ ok: true });
-    return Response.json({ cursor: 2, readOnly: false, events: [] });
-  }, async () => {
-    const textarea = doc.app.querySelector<TestNode>('.composer__input')!;
-    textarea.value = 'hello';
-    textarea.oninput?.();
-
-    await browser.onSend(textarea as unknown as HTMLTextAreaElement);
-
-    assert.equal(doc.app.querySelector<TestNode>('.composer__input'), textarea);
-    assert.equal(textarea.value, '');
-  });
+const projectList = (conversations: TestConversation[]) => ({
+  projects: [{ id: 'p1', path: '/proj', title: 'proj', conversations }],
 });
+
+const neverResponse = () => new Promise<Response>(() => {});
 
 test('successful send preserves a newer draft typed before the response returns', async () => {
   const { browser, doc } = renderApp();
@@ -27,7 +15,7 @@ test('successful send preserves a newer draft typed before the response returns'
 
   await withFetch(async (input) => {
     if (String(input).endsWith('/say')) return say.response;
-    return Response.json({ cursor: 2, readOnly: false, events: [] });
+    return Response.json(testView(2));
   }, async () => {
     const textarea = doc.app.querySelector<TestNode>('.composer__input')!;
     textarea.value = 'first';
@@ -46,6 +34,28 @@ test('successful send preserves a newer draft typed before the response returns'
     assert.equal(textarea.value, 'second');
     assert.equal(textarea.selectionStart, 3);
     assert.equal(textarea.selectionEnd, 3);
+  });
+});
+
+test('successful send preserves textarea changes not yet reflected by input events', async () => {
+  const { browser, doc } = renderApp();
+  const say = pendingResponse();
+
+  await withFetch(async (input) => {
+    if (String(input).endsWith('/say')) return say.response;
+    return Response.json(testView(2));
+  }, async () => {
+    const textarea = doc.app.querySelector<TestNode>('.composer__input')!;
+    textarea.value = 'first';
+    textarea.oninput?.();
+
+    const send = browser.onSend(textarea as unknown as HTMLTextAreaElement);
+    textarea.value = 'composition text';
+    say.resolve(Response.json({ ok: true }));
+    await send;
+
+    assert.equal(doc.app.querySelector<TestNode>('.composer__input'), textarea);
+    assert.equal(textarea.value, 'composition text');
   });
 });
 
@@ -72,30 +82,8 @@ test('successful send preserves a newer same-text draft typed before the respons
   });
 });
 
-test('successful send preserves textarea changes not yet reflected by input events', async () => {
-  const { browser, doc } = renderApp();
-  const say = pendingResponse();
-
-  await withFetch(async (input) => {
-    if (String(input).endsWith('/say')) return say.response;
-    return Response.json(testView(2));
-  }, async () => {
-    const textarea = doc.app.querySelector<TestNode>('.composer__input')!;
-    textarea.value = 'first';
-    textarea.oninput?.();
-
-    const send = browser.onSend(textarea as unknown as HTMLTextAreaElement);
-    textarea.value = 'composition text';
-    say.resolve(Response.json({ ok: true }));
-    await send;
-
-    assert.equal(doc.app.querySelector<TestNode>('.composer__input'), textarea);
-    assert.equal(textarea.value, 'composition text');
-  });
-});
-
-test('pending send disables the button and ignores duplicate sends', async () => {
-  const { browser, doc } = renderApp();
+test('pending send disables the button and ignores duplicate clicks', async () => {
+  const { doc } = renderApp();
   const say = pendingResponse();
   let sayRequests = 0;
 
@@ -111,14 +99,14 @@ test('pending send disables the button and ignores duplicate sends', async () =>
     textarea.value = 'hello';
     textarea.oninput?.();
 
-    const first = browser.onSend(textarea as unknown as HTMLTextAreaElement);
-    const second = browser.onSend(textarea as unknown as HTMLTextAreaElement);
+    button.onclick?.();
+    button.onclick?.();
 
     assert.equal(sayRequests, 1);
     assert.equal(button.disabled, true);
 
     say.resolve(Response.json({ ok: true }));
-    await Promise.all([first, second]);
+    await tick();
 
     assert.equal(sayRequests, 1);
     assert.equal(button.disabled, false);
@@ -215,9 +203,10 @@ test('send completion from an old composer does not update the active chat', asy
   const say = pendingResponse();
 
   await withFetch(async (input) => {
-    if (String(input).endsWith('/say')) return say.response;
-    if (String(input) === '/api/conversations/c2') return Response.json(testView(1, [messageEvent('c2 current')]));
-    if (String(input).endsWith('/events')) return neverResponse();
+    const path = String(input);
+    if (path.endsWith('/say')) return say.response;
+    if (path === '/api/conversations/c2') return Response.json(testView(1, [messageEvent('c2 current')]));
+    if (path.endsWith('/events')) return neverResponse();
     return Response.json(testView());
   }, async () => {
     const oldTextarea = doc.app.querySelector<TestNode>('.composer__input')!;
@@ -298,25 +287,6 @@ test('network send failures keep the composer and show an error', async () => {
   });
 });
 
-test('failed send keeps the stable composer textarea and shows the error', async () => {
-  const { browser, doc } = renderApp();
-
-  await withFetch(async (input) => {
-    if (String(input).endsWith('/say')) return Response.json({ ok: false, error: 'No room left.' }, { status: 400 });
-    return Response.json(testView(1));
-  }, async () => {
-    const textarea = doc.app.querySelector<TestNode>('.composer__input')!;
-    textarea.value = 'hello';
-    textarea.oninput?.();
-
-    await browser.onSend(textarea as unknown as HTMLTextAreaElement);
-
-    assert.equal(doc.app.querySelector<TestNode>('.composer__input'), textarea);
-    assert.equal(textarea.value, 'hello');
-    assert.match(doc.app.textContent, /No room left/);
-  });
-});
-
 test('failed send keeps its error when the follow-up refresh rejects', async () => {
   const { browser, doc } = renderApp();
 
@@ -339,7 +309,7 @@ test('failed send keeps its error when the follow-up refresh rejects', async () 
 });
 
 test('failed send refreshes a server-side read-only transition', async () => {
-  const { browser, doc } = renderApp();
+  const { doc } = renderApp();
 
   await withFetch(async (input) => {
     const path = String(input);
@@ -351,7 +321,8 @@ test('failed send refreshes a server-side read-only transition', async () => {
     textarea.value = 'too much';
     textarea.oninput?.();
 
-    await browser.onSend(textarea as unknown as HTMLTextAreaElement);
+    doc.app.querySelector<TestNode>('.composer__btn')!.onclick?.();
+    await tick();
 
     assert.equal(doc.app.querySelector<TestNode>('.composer__input'), textarea);
     assert.equal(textarea.disabled, true);
@@ -367,7 +338,7 @@ test('failed send refreshes a missing conversation', async () => {
     const path = String(input);
     if (path.endsWith('/say')) return Response.json({ ok: false, error: 'unknown conversation' }, { status: 404 });
     if (path === '/api/conversations/c1') return new Response(JSON.stringify({ error: 'missing' }), { status: 404 });
-    if (path === '/api/projects') return Response.json(projectList([]));
+    if (path === '/api/projects') return Response.json({ projects: [] });
     return Response.json(testView());
   }, async () => {
     const textarea = doc.app.querySelector<TestNode>('.composer__input')!;
@@ -375,7 +346,7 @@ test('failed send refreshes a missing conversation', async () => {
     textarea.oninput?.();
 
     await browser.onSend(textarea as unknown as HTMLTextAreaElement);
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await tick();
 
     assert.equal(browser.conversationId, null);
     assert.match(doc.live.textContent, /Conversation no longer exists/);

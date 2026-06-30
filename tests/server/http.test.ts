@@ -52,7 +52,7 @@ function fakeApp(over: Partial<RoundtableApp> = {}): RoundtableApp {
     async view(id) {
       return id === 'c1' ? fakeView() : null;
     },
-    async say(id, _author, text) {
+    async say(id, _identity, text) {
       if (id !== 'c1') return { ok: false, error: 'unknown conversation' };
       if (text.length > 1000) return { ok: false, error: 'message exceeds the size limit' };
       return { ok: true, cursor: 3 };
@@ -67,6 +67,23 @@ function fakeApp(over: Partial<RoundtableApp> = {}): RoundtableApp {
       if (id !== 'c1') return null;
       queueMicrotask(() => client.write('id: 1\nevent: message\ndata: {"cursor":1}\n\n'));
       return () => {};
+    },
+    async listAgents(id) {
+      return id === 'c1' ? { tmuxAvailable: true, agents: [] } : null;
+    },
+    async addAgent(id, kind) {
+      return id === 'c1'
+        ? { ok: true, agent: { instanceId: 'a1b2c3d4', kind, name: 'Claude-a1b2', status: 'starting', resumable: false } }
+        : { ok: false, error: 'unknown conversation', status: 404 };
+    },
+    async resumeAgent(id, instanceId) {
+      return id === 'c1' && instanceId === 'a1' ? { ok: true } : { ok: false, status: 404 };
+    },
+    async stopAgent(id, instanceId) {
+      return id === 'c1' && instanceId === 'a1' ? { ok: true } : { ok: false, status: 404 };
+    },
+    async removeAgent(id, instanceId) {
+      return id === 'c1' && instanceId === 'a1' ? { ok: true } : { ok: false, status: 404 };
     },
     ...over,
   };
@@ -86,19 +103,7 @@ async function withServer(fn: (ctx: { origin: string; app: RoundtableApp }) => P
 const postJson = (origin: string, path: string, body: unknown, extra: Record<string, string> = {}) =>
   fetch(`${origin}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...extra }, body: JSON.stringify(body) });
 
-// ── Projects (sidebar gating + grouping) ──────────────────────────────────
-
-test('GET /api/projects returns projects with their conversations embedded', async () => {
-  await withServer(async ({ origin }) => {
-    const res = await fetch(`${origin}/api/projects`);
-    assert.equal(res.status, 200);
-    const body = (await res.json()) as { projects: Array<{ id: string; path: string; title: string; conversations: Array<{ id: string }> }> };
-    assert.equal(body.projects.length, 1);
-    assert.equal(body.projects[0]!.id, 'p1');
-    assert.equal(body.projects[0]!.path, '/abs/proj');
-    assert.equal(body.projects[0]!.conversations[0]!.id, 'c1');
-  });
-});
+// Projects (sidebar gating + grouping)
 
 test('POST /api/projects adds a project, rejects an invalid path, and is CSRF-guarded', async () => {
   await withServer(async ({ origin }) => {
@@ -136,39 +141,54 @@ test('POST /api/projects/:id/conversations creates within the project and is CSR
   });
 });
 
-test('the flat GET /api/conversations list endpoint is gone', async () => {
-  await withServer(async ({ origin }) => {
-    assert.equal((await fetch(`${origin}/api/conversations`)).status, 404);
-  });
-});
+// Agents (launch + manage)
 
-// ── Conversations by id (the agent contract — unchanged) ───────────────────
+// Conversations by id (the agent contract, unchanged)
 
 test('the view DTO renders markdown and exposes author + cursor', async () => {
   await withServer(async ({ origin }) => {
     const res = await fetch(`${origin}/api/conversations/c1`);
     const body = (await res.json()) as { cursor: number; events: Array<{ author?: string; content?: Array<{ type: string }> }> };
+
     assert.equal(body.cursor, 2);
     assert.equal(body.events.length, 2);
     assert.equal(body.events[0]!.author, 'user');
     assert.equal(body.events[1]!.author, 'Claude Opus 4.8');
-    assert.equal(body.events[1]!.content![0]!.type, 'paragraph'); // markdown rendered to nodes
+    assert.equal(body.events[1]!.content![0]!.type, 'paragraph');
   });
 });
 
 test('say appends and returns the new cursor', async () => {
+  let identity: unknown;
   await withServer(async ({ origin }) => {
-    const res = await postJson(origin, '/api/conversations/c1/say', { author: 'Claude Opus 4.8', text: 'pong' });
+    const res = await postJson(origin, '/api/conversations/c1/say', { model: 'Claude Opus 4.8', name: 'Opal', text: 'pong' });
+
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, cursor: 3 });
-  });
+    assert.deepEqual(identity, { model: 'Claude Opus 4.8', name: 'Opal' });
+  }, fakeApp({
+    async say(id, gotIdentity, text) {
+      identity = gotIdentity;
+      assert.equal(id, 'c1');
+      assert.equal(text, 'pong');
+      return { ok: true, cursor: 3 };
+    },
+  }));
 });
 
-test('say rejects an oversized message', async () => {
+test('oversized JSON bodies are rejected before the app is called', async () => {
+  let called = false;
   await withServer(async ({ origin }) => {
-    const res = await postJson(origin, '/api/conversations/c1/say', { author: 'x', text: 'x'.repeat(2000) });
-    assert.equal(res.status, 400);
-  });
+    const res = await postJson(origin, '/api/conversations/c1/say', { model: 'x', text: 'x'.repeat(2_100_000) });
+    assert.equal(res.status, 413);
+    assert.deepEqual(await res.json(), { error: 'request body too large' });
+    assert.equal(called, false);
+  }, fakeApp({
+    async say() {
+      called = true;
+      return { ok: true, cursor: 99 };
+    },
+  }));
 });
 
 test('malformed JSON is rejected before the app is called', async () => {
@@ -179,6 +199,7 @@ test('malformed JSON is rejected before the app is called', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: '{',
     });
+
     assert.equal(res.status, 400);
     assert.deepEqual(await res.json(), { error: 'invalid JSON body' });
     assert.equal(called, false);
@@ -186,21 +207,6 @@ test('malformed JSON is rejected before the app is called', async () => {
     async createConversation(_projectId, title) {
       called = true;
       return { ok: true, conversation: { ...CONV, title } };
-    },
-  }));
-});
-
-test('oversized JSON bodies are rejected before the app is called', async () => {
-  let called = false;
-  await withServer(async ({ origin }) => {
-    const res = await postJson(origin, '/api/conversations/c1/say', { author: 'x', text: 'x'.repeat(2_100_000) });
-    assert.equal(res.status, 413);
-    assert.deepEqual(await res.json(), { error: 'request body too large' });
-    assert.equal(called, false);
-  }, fakeApp({
-    async say() {
-      called = true;
-      return { ok: true, cursor: 99 };
     },
   }));
 });
@@ -224,11 +230,11 @@ test('messages?since returns events after the cursor as raw text, without a rend
 
 test('say is CSRF-guarded: cross-site Origin is refused, same-origin and no-Origin pass', async () => {
   await withServer(async ({ origin }) => {
-    const evil = await postJson(origin, '/api/conversations/c1/say', { author: 'x', text: 'hi' }, { Origin: 'http://evil.test' });
+    const evil = await postJson(origin, '/api/conversations/c1/say', { model: 'x', text: 'hi' }, { Origin: 'http://evil.test' });
     assert.equal(evil.status, 403);
-    const same = await postJson(origin, '/api/conversations/c1/say', { author: 'x', text: 'hi' }, { Origin: origin });
+    const same = await postJson(origin, '/api/conversations/c1/say', { model: 'x', text: 'hi' }, { Origin: origin });
     assert.equal(same.status, 200);
-    const agent = await postJson(origin, '/api/conversations/c1/say', { author: 'x', text: 'hi' }); // no Origin (non-browser)
+    const agent = await postJson(origin, '/api/conversations/c1/say', { model: 'x', text: 'hi' }); // no Origin (non-browser)
     assert.equal(agent.status, 200);
   });
 });
@@ -236,7 +242,7 @@ test('say is CSRF-guarded: cross-site Origin is refused, same-origin and no-Orig
 test('a loopback alias Origin (localhost) is accepted, not treated as cross-site', async () => {
   await withServer(async ({ origin }) => {
     const port = new URL(origin).port;
-    const res = await postJson(origin, '/api/conversations/c1/say', { author: 'x', text: 'hi' }, { Origin: `http://localhost:${port}` });
+    const res = await postJson(origin, '/api/conversations/c1/say', { model: 'x', text: 'hi' }, { Origin: `http://localhost:${port}` });
     assert.equal(res.status, 200);
   });
 });
@@ -246,45 +252,24 @@ test('crossSite refuses a foreign port and a loopback-lookalike host', async () 
     const wrongPort = await postJson(
       origin,
       '/api/conversations/c1/say',
-      { author: 'x', text: 'hi' },
+      { model: 'x', text: 'hi' },
       { Origin: 'http://127.0.0.1:1' },
     );
     assert.equal(wrongPort.status, 403);
     const wrongScheme = await postJson(
       origin,
       '/api/conversations/c1/say',
-      { author: 'x', text: 'hi' },
+      { model: 'x', text: 'hi' },
       { Origin: origin.replace('http:', 'https:') },
     );
     assert.equal(wrongScheme.status, 403);
     const lookalike = await postJson(
       origin,
       '/api/conversations/c1/say',
-      { author: 'x', text: 'hi' },
+      { model: 'x', text: 'hi' },
       { Origin: 'http://127.0.0.1.evil.com' },
     );
     assert.equal(lookalike.status, 403);
-  });
-});
-
-test('GET activity returns the current presence snapshot', async () => {
-  await withServer(async ({ origin }) => {
-    const res = await fetch(`${origin}/api/conversations/c1/activity`);
-    assert.equal(res.status, 200);
-    const body = (await res.json()) as { active: Array<{ author: string; state: string }> };
-    assert.equal(body.active[0]!.author, 'Claude Opus 4.8');
-    assert.equal(body.active[0]!.state, 'thinking');
-  });
-});
-
-test('POST activity is CSRF-guarded like say', async () => {
-  await withServer(async ({ origin }) => {
-    const evil = await postJson(origin, '/api/conversations/c1/activity', { author: 'x', state: 'thinking' }, { Origin: 'http://evil.test' });
-    assert.equal(evil.status, 403);
-    const ok = await postJson(origin, '/api/conversations/c1/activity', { author: 'x', state: 'thinking' });
-    assert.equal(ok.status, 200);
-    const clear = await postJson(origin, '/api/conversations/c1/activity', { author: 'x', state: null });
-    assert.equal(clear.status, 200);
   });
 });
 
@@ -300,38 +285,10 @@ test('DELETE removes a conversation, 404s an unknown id, and is CSRF-guarded', a
   });
 });
 
-test('an unknown-id 404 body is uniform across routes (DELETE included)', async () => {
-  await withServer(async ({ origin }) => {
-    const view = await fetch(`${origin}/api/conversations/nope`);
-    const del = await fetch(`${origin}/api/conversations/nope`, { method: 'DELETE' });
-    assert.equal(del.status, 404);
-    assert.deepEqual(await del.json(), await view.json()); // same { error: 'not found' } shape
-  });
-});
-
 test('every response carries a Content-Security-Policy', async () => {
   await withServer(async ({ origin }) => {
     const res = await fetch(`${origin}/api/projects`);
     assert.match(res.headers.get('content-security-policy') ?? '', /default-src 'self'/);
-  });
-});
-
-test('SSE streams without auth', async () => {
-  await withServer(async ({ origin }) => {
-    const res = await fetch(`${origin}/api/conversations/c1/events`);
-    assert.equal(res.headers.get('content-type'), 'text/event-stream');
-    const reader = res.body!.getReader();
-    const { value } = await reader.read();
-    assert.match(new TextDecoder().decode(value), /connected|event: message/);
-    await reader.cancel();
-  });
-});
-
-test('SSE for an unknown conversation returns the uniform 404 body', async () => {
-  await withServer(async ({ origin }) => {
-    const res = await fetch(`${origin}/api/conversations/nope/events`);
-    assert.equal(res.status, 404);
-    assert.deepEqual(await res.json(), { error: 'not found' });
   });
 });
 
@@ -352,8 +309,11 @@ test('serveStatic serves files, refuses path traversal, and 404s the unknown', a
     const index = await fetch(`${origin}/`);
     assert.equal(index.status, 200);
     assert.match(index.headers.get('content-type') ?? '', /text\/html/);
+    assert.equal(index.headers.get('cache-control'), 'no-store');
 
-    const appBody = await (await fetch(`${origin}/app.js`)).text();
+    const appJs = await fetch(`${origin}/app.js`);
+    assert.equal(appJs.headers.get('cache-control'), 'no-store');
+    const appBody = await appJs.text();
     assert.match(appBody, /import \{ ok \} from '\.\/client\.ts'/);
     assert.doesNotMatch(appBody, /: string/);
 

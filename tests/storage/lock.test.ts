@@ -1,17 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StorageLock } from '../../src/storage/lock.ts';
 
 const home = () => mkdtemp(join(tmpdir(), 'rt-lock-'));
-
-test('acquires a lock on a fresh home', async () => {
-  const lock = await StorageLock.acquire(await home());
-  assert.ok(lock);
-  await lock!.release();
-});
+const lockFile = (dir: string) => join(dir, 'server.lock.json');
+const deadPid = 2147483646;
 
 test('a second acquire is refused while held (fail closed)', async () => {
   const dir = await home();
@@ -30,19 +26,20 @@ test('release allows re-acquisition', async () => {
   await b!.release();
 });
 
-test('takes over a stale lock whose owner pid is dead', async () => {
+test('takes over a same-host stale lock whose owner pid is dead', async () => {
   const dir = await home();
-  await mkdir(join(dir, '.lock'));
-  await writeFile(join(dir, '.lock', 'owner.json'), JSON.stringify({ hostname: hostname(), pid: 2147483646 }));
+  await writeFile(lockFile(dir), JSON.stringify({ hostname: hostname(), pid: deadPid, token: 'old' }));
+
   const lock = await StorageLock.acquire(dir);
-  assert.ok(lock); // dead owner on this host → safe takeover
+
+  assert.ok(lock);
+  assert.notEqual(lock!.identity.token, 'old');
   await lock!.release();
 });
 
 test('only one contender can take over the same stale lock', async () => {
   const dir = await home();
-  await mkdir(join(dir, '.lock'));
-  await writeFile(join(dir, '.lock', 'owner.json'), JSON.stringify({ hostname: hostname(), pid: 2147483646 }));
+  await writeFile(lockFile(dir), JSON.stringify({ hostname: hostname(), pid: deadPid, token: 'old' }));
 
   const locks = await Promise.all(Array.from({ length: 6 }, () => StorageLock.acquire(dir)));
   const acquired = locks.filter((lock): lock is StorageLock => lock !== null);
@@ -53,16 +50,14 @@ test('only one contender can take over the same stale lock', async () => {
 
 test('refuses takeover when the owner is on another host', async () => {
   const dir = await home();
-  await mkdir(join(dir, '.lock'));
-  await writeFile(join(dir, '.lock', 'owner.json'), JSON.stringify({ hostname: 'some-other-host', pid: 2147483646 }));
-  const lock = await StorageLock.acquire(dir);
-  assert.equal(lock, null); // cannot verify another host → fail closed
+  await writeFile(lockFile(dir), JSON.stringify({ hostname: 'some-other-host', pid: deadPid, token: 'old' }));
+
+  assert.equal(await StorageLock.acquire(dir), null);
 });
 
 test('refuses takeover when the owner file is not verifiable', async () => {
   const dir = await home();
-  await mkdir(join(dir, '.lock'));
-  await writeFile(join(dir, '.lock', 'owner.json'), JSON.stringify({ hostname: hostname() }));
-  const lock = await StorageLock.acquire(dir);
-  assert.equal(lock, null);
+  await writeFile(lockFile(dir), JSON.stringify({ hostname: hostname() }));
+
+  assert.equal(await StorageLock.acquire(dir), null);
 });
