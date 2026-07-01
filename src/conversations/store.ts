@@ -1,9 +1,9 @@
-import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename as renameFile, rm } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { ConversationMetadata } from '../types.ts';
 import { agentRecordArray, type AgentRecord } from '../agents/record.ts';
 import { isRecord, readJsonSidecar, writeJsonPrivate } from '../storage/sidecar.ts';
-import { conversationFilename, conversationId, isConversationId } from './naming.ts';
+import { conversationFilename, conversationId, filenameSuffix, isConversationId } from './naming.ts';
 
 const META_SUFFIX = '.meta.json';
 const AGENTS_SUFFIX = '.agents.json';
@@ -65,6 +65,47 @@ export class ConversationStore {
     if (patch.lastActivityAt !== undefined) next.lastActivityAt = patch.lastActivityAt;
     if (patch.readOnly !== undefined) next.readOnly = patch.readOnly;
     await this.writeMeta(next);
+    return next;
+  }
+
+  /** Rename a conversation: rewrite its title and rename the Markdown file to
+   *  follow, reusing the existing 8-hex suffix so the new name can never collide
+   *  with another conversation's. The id is never touched, so lookup is
+   *  unaffected. Returns the updated metadata, or null when the id is unknown.
+   *  Deliberately the only place a filename changes; `update` stays whitelisted. */
+  async rename(id: string, title: string): Promise<ConversationMetadata | null> {
+    const meta = await this.get(id);
+    if (!meta) return null;
+    const trimmed = title.trim();
+    const filename = conversationFilename(trimmed, filenameSuffix(meta.filename) ?? undefined);
+    if (!isSafeMarkdownFilename(filename)) throw new Error(`refusing unsafe conversation filename: ${filename}`);
+    const next: ConversationMetadata = { ...meta, title: trimmed, filename };
+    if (filename === meta.filename) {
+      await this.writeMeta(next); // slug unchanged; rewrite the title only
+      return next;
+    }
+
+    const oldPath = this.conversationFilePath(meta);
+    const newPath = this.conversationFilePath(next);
+    try {
+      await renameFile(oldPath, newPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      // The Markdown is lazily created, so an unopened conversation has no file
+      // yet: treat this as a metadata-only rename, mirroring delete's force-rm.
+      await this.writeMeta(next);
+      return next;
+    }
+    try {
+      await this.writeMeta(next);
+    } catch (err) {
+      // Roll the file back so the name and metadata never diverge; if even that
+      // fails, surface the stranded transcript rather than orphaning it silently.
+      await renameFile(newPath, oldPath).catch((rollbackErr) => {
+        throw new Error(`rename rollback failed; transcript stranded at ${newPath}`, { cause: rollbackErr });
+      });
+      throw err;
+    }
     return next;
   }
 

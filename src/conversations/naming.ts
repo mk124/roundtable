@@ -1,14 +1,25 @@
 import { hexId, isHexId, shortId } from '../ids.ts';
 
-/** Lowercase the text and collapse anything outside `[a-z0-9]` into single
- *  dashes, trimming leading/trailing dashes and capping length. */
+/** Lowercase the text and collapse anything outside Unicode letters/digits into
+ *  single dashes, trimming leading/trailing dashes and capping length. NFC is
+ *  applied first so decomposed accents compose into letters (rather than being
+ *  stripped as marks) and so equivalent inputs yield the same name; the cap
+ *  counts code points so an astral character is never split into a lone
+ *  surrogate. */
 export function slugify(text: string, maxLength = 40): string {
-  return text
+  const collapsed = text
+    .normalize('NFC')
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, maxLength)
-    .replace(/-+$/g, '');
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '');
+  return [...collapsed].slice(0, maxLength).join('').replace(/-+$/g, '');
+}
+
+/** The 8-hex disambiguating suffix of a conversation filename, or null when it
+ *  has none. A rename reuses this so the renamed file keeps its unique suffix
+ *  and never collides with another conversation's. */
+export function filenameSuffix(filename: string): string | null {
+  return /-([0-9a-f]{8})\.md$/.exec(filename)?.[1] ?? null;
 }
 
 /** A high-entropy conversation id. Stored only in sidecar metadata, never in

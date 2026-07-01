@@ -39,6 +39,7 @@ export class ConversationApi {
   removeProject = (id: string) => this.send('DELETE', `/api/projects/${id}`);
   createConversation = (projectId: string, title: string) => this.post<{ conversation: ConversationDTO }>(`/api/projects/${projectId}/conversations`, { title });
   deleteConversation = (id: string) => this.send('DELETE', `/api/conversations/${id}`);
+  renameConversation = (id: string, title: string) => this.send<{ conversation: ConversationDTO }>('PATCH', `/api/conversations/${id}`, { title });
   view = async (id: string): Promise<ViewDTO | null> => {
     const url = `/api/conversations/${id}`;
     const res = await fetch(url);

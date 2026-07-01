@@ -40,6 +40,7 @@ export interface RoundtableApp {
   removeProject(projectId: string): Promise<{ ok: true } | { ok: false; error: string; status?: 404 | 503 }>;
   createConversation(projectId: string, title: string): Promise<{ ok: true; conversation: ConversationMetadata } | { ok: false; error: string }>;
   deleteConversation(conversationId: string): Promise<{ ok: true } | { ok: false; error: string; status?: 404 | 503 }>;
+  renameConversation(conversationId: string, title: string): Promise<{ ok: true; conversation: ConversationMetadata } | { ok: false; error: string; status?: 400 | 404 }>;
   view(conversationId: string): Promise<ConversationView | null>;
   say(conversationId: string, identity: SayIdentity, text: string): Promise<{ ok: true; cursor: number } | { ok: false; error: string }>;
   setActivity(conversationId: string, author: string, state: string | null): Promise<{ ok: true } | { ok: false; error: string }>;
@@ -149,6 +150,11 @@ export function createServer(deps: ServerDeps): http.Server {
       } else if (!action && req.method === 'DELETE') {
         const result = await deps.app.deleteConversation(id);
         return result.ok ? json(res, 200, result) : result.status === 503 ? json(res, 503, { error: result.error }) : notFound(res);
+      } else if (!action && req.method === 'PATCH') {
+        const body = await readJson(req);
+        if (!body.ok) return json(res, body.status, { error: body.error });
+        const result = await deps.app.renameConversation(id, String(body.value.title ?? ''));
+        return result.ok ? json(res, 200, { conversation: conversationSummary(result.conversation) }) : json(res, result.status ?? 404, { error: result.error });
       } else if (action === 'messages' && req.method === 'GET') {
         const view = await deps.app.view(id);
         if (!view) return notFound(res);

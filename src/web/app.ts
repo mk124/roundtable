@@ -411,14 +411,21 @@ export class App {
     item.setAttribute('data-conversation-id', conv.id);
     if (conv.readOnly) item.appendChild(el(this.doc, 'span', 'badge badge--readonly', 'read-only'));
     item.onclick = () => void this.openConversation(conv.id);
-    const del = el(this.doc, 'button', 'nav-row__del', '✕') as HTMLButtonElement;
+    const rename = el(this.doc, 'button', 'nav-row__btn', '✎') as HTMLButtonElement;
+    rename.type = 'button';
+    rename.title = 'Rename this conversation';
+    rename.setAttribute('aria-label', `Rename ${conv.title}`);
+    rename.setAttribute('data-sidebar-action', 'rename');
+    rename.setAttribute('data-conversation-id', conv.id);
+    rename.onclick = () => void this.renameConversation(conv);
+    const del = el(this.doc, 'button', 'nav-row__btn nav-row__del', '✕') as HTMLButtonElement;
     del.type = 'button';
     del.title = 'Delete this conversation';
     del.setAttribute('aria-label', `Delete ${conv.title}`);
     del.setAttribute('data-sidebar-action', 'delete');
     del.setAttribute('data-conversation-id', conv.id);
     del.onclick = () => void this.deleteConversation(conv);
-    row.append(item, del);
+    row.append(item, rename, del);
     return row;
   }
 
@@ -887,6 +894,33 @@ export class App {
     } else {
       window.alert(result.error ?? 'Could not create conversation.'); // surface the server's reason, leave the sidebar as-is
     }
+  }
+
+  /** Rename via a prompt prefilled with the current title. An empty or unchanged
+   *  title is a no-op; the server is authoritative on the trimmed result, so the
+   *  sidebar and header adopt the title it returns. */
+  private async renameConversation(conv: ConversationDTO): Promise<void> {
+    const input = window.prompt('Rename conversation:', conv.title);
+    if (input === null) return; // cancelled
+    const title = input.trim();
+    if (!title || title === conv.title) return; // unchanged or empty: no request
+    const result = await this.api.renameConversation(conv.id, title);
+    if (!result.ok || !result.conversation) {
+      this.announce('Rename failed.');
+      return;
+    }
+    this.applyConversationTitle(conv.id, result.conversation.title);
+    this.announce('Conversation renamed.');
+  }
+
+  /** Adopt a new title for one conversation across the sidebar and, when it is the
+   *  open one, the chat header. */
+  private applyConversationTitle(id: string, title: string): void {
+    this.projects = this.projects.map((project) => ({
+      ...project,
+      conversations: project.conversations.map((conv) => (conv.id === id ? { ...conv, title } : conv)),
+    }));
+    if (!this.updateRenderedSidebar()) this.render();
   }
 
   private async deleteConversation(conv: ConversationDTO): Promise<void> {

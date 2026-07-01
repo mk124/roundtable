@@ -225,7 +225,9 @@ textarea {
   min-width: 0;
   border: 0;
 }
-.nav-row__del {
+/* Row action buttons (rename ✎, delete ✕): hidden until the row is hovered or
+   focused so the list stays calm. */
+.nav-row__btn {
   flex: none;
   width: 26px;
   height: 26px;
@@ -238,15 +240,17 @@ textarea {
   border-radius: 6px;
   color: var(--muted);
   cursor: pointer;
-  opacity: 0; /* revealed on row hover/focus so the list stays calm */
+  opacity: 0;
 }
-.nav-row:hover .nav-row__del,
-.nav-row:focus-within .nav-row__del {
+.nav-row:hover .nav-row__btn,
+.nav-row:focus-within .nav-row__btn {
   opacity: 1;
 }
-.nav-row__del:hover {
+.nav-row__btn:hover {
   background: var(--surface-2);
-  color: var(--danger);
+}
+.nav-row__del:hover {
+  color: var(--danger); /* delete alone warns on hover; rename stays neutral */
 }
 
 .badge {

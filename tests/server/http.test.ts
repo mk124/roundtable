@@ -49,6 +49,11 @@ function fakeApp(over: Partial<RoundtableApp> = {}): RoundtableApp {
     async deleteConversation(id) {
       return id === 'c1' ? { ok: true } : { ok: false, error: 'unknown conversation' };
     },
+    async renameConversation(id, title) {
+      if (id !== 'c1') return { ok: false, error: 'unknown conversation', status: 404 };
+      if (title.trim() === '') return { ok: false, error: 'title is required', status: 400 };
+      return { ok: true, conversation: { ...CONV, title } };
+    },
     async view(id) {
       return id === 'c1' ? fakeView() : null;
     },
@@ -259,6 +264,25 @@ test('DELETE removes a conversation, 404s an unknown id, and is CSRF-guarded', a
     const ok = await fetch(`${origin}/api/conversations/c1`, { method: 'DELETE' });
     assert.equal(ok.status, 200);
     assert.deepEqual(await ok.json(), { ok: true });
+  });
+});
+
+test('PATCH renames a conversation, maps unknown/empty, and is CSRF-guarded', async () => {
+  await withServer(async ({ origin }) => {
+    const patch = (path: string, body: unknown, extra: Record<string, string> = {}) =>
+      fetch(`${origin}${path}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', ...extra }, body: JSON.stringify(body) });
+
+    const evil = await patch('/api/conversations/c1', { title: 'x' }, { Origin: 'http://evil.test' });
+    assert.equal(evil.status, 403);
+    const missing = await patch('/api/conversations/nope', { title: 'x' });
+    assert.equal(missing.status, 404);
+    const empty = await patch('/api/conversations/c1', { title: '   ' });
+    assert.equal(empty.status, 400);
+    const ok = await patch('/api/conversations/c1', { title: 'Renamed' });
+    assert.equal(ok.status, 200);
+    const body = (await ok.json()) as { conversation: { id: string; title: string } };
+    assert.equal(body.conversation.title, 'Renamed');
+    assert.equal(body.conversation.id, 'c1'); // id is unchanged
   });
 });
 

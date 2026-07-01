@@ -156,6 +156,25 @@ export class RoundtableService implements RoundtableApp {
     });
   }
 
+  /** Rename a conversation: rewrite its title, rename its Markdown file to
+   *  follow, and evict the cached context so the next access reopens at the new
+   *  path. Serialized like delete; agents are untouched (they never hold the path). */
+  async renameConversation(conversationId: string, title: string) {
+    return this.mutate(conversationId, async () => {
+      await this.opening.get(conversationId)?.catch(() => {});
+      // Reject a title that is empty once whitespace and zero-width/format chars
+      // (category Cf, e.g. U+200B) are removed; `.trim()` alone would store an
+      // invisible name for a pure zero-width title.
+      if (title.replace(/[\s\p{Cf}]+/gu, '') === '') return { ok: false as const, error: 'title is required', status: 400 as const };
+      const store = await this.resolveStore(conversationId);
+      if (!store || !(await store.get(conversationId))) return { ok: false as const, error: 'unknown conversation', status: 404 as const };
+      const conversation = await store.rename(conversationId, title);
+      if (!conversation) return { ok: false as const, error: 'unknown conversation', status: 404 as const };
+      this.evictConversation(conversationId);
+      return { ok: true as const, conversation };
+    });
+  }
+
   async view(conversationId: string) {
     const ctx = await this.context(conversationId);
     if (!ctx) return null;

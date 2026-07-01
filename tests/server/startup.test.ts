@@ -226,6 +226,41 @@ test('deleteConversation leaves data and streams intact when agent stop is uncon
   }, { killRemoves: false });
 });
 
+test('renameConversation updates the title and keeps the transcript readable', async () => {
+  const { service, projectId } = await withProject();
+  const conv = await makeConversation(service, projectId, 'before');
+  await service.say(conv.id, { model: 'user' }, 'hello');
+
+  const result = await service.renameConversation(conv.id, '会议记录');
+
+  assert.equal(result.ok, true);
+  if (result.ok) assert.deepEqual([result.conversation.id, result.conversation.title], [conv.id, '会议记录']);
+  assert.equal((await service.view(conv.id))?.events.length, 1);
+  assert.equal((await service.listProjects()).flatMap((g) => g.conversations).find((c) => c.id === conv.id)?.title, '会议记录');
+});
+
+test('renameConversation rejects blank and zero-width titles and 404s an unknown id', async () => {
+  const { service, projectId } = await withProject();
+  const conv = await makeConversation(service, projectId, 'keep');
+
+  assert.deepEqual(await service.renameConversation(conv.id, '   '), { ok: false, error: 'title is required', status: 400 });
+  assert.deepEqual(await service.renameConversation(conv.id, '\u200b'), { ok: false, error: 'title is required', status: 400 });
+  assert.deepEqual(await service.renameConversation('deadbeefdeadbeef', 'x'), { ok: false, error: 'unknown conversation', status: 404 });
+  assert.equal((await service.listProjects()).flatMap((g) => g.conversations).find((c) => c.id === conv.id)?.title, 'keep');
+});
+
+test('renameConversation renames a read-only conversation', async () => {
+  const { service, projectId } = await withProject(TINY);
+  const conv = await makeConversation(service, projectId, 'full');
+  await service.say(conv.id, { model: 'user' }, 'hi'); // exhausts the tiny budget, flipping read-only
+
+  const result = await service.renameConversation(conv.id, 'renamed while read-only');
+
+  assert.equal(result.ok, true);
+  const listed = (await service.listProjects()).flatMap((g) => g.conversations).find((c) => c.id === conv.id);
+  assert.deepEqual([listed?.title, listed?.readOnly], ['renamed while read-only', true]);
+});
+
 test('removeProject deregisters, retains transcripts, and stops resolving its ids until re-added', async () => {
   const { projectPath, service, projectId } = await withProject();
   const conv = await makeConversation(service, projectId, 'kept');
