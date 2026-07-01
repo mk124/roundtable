@@ -120,6 +120,24 @@ async function makeConversation(service: RoundtableService, projectId: string, t
   return created.conversation;
 }
 
+async function waitForAgentStatus(service: RoundtableService, convId: string, instanceId: string, status: string): Promise<void> {
+  for (let i = 0; i < 50; i += 1) {
+    if ((await service.listAgents(convId))?.agents.find((agent) => agent.instanceId === instanceId)?.status === status) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(`agent ${instanceId} did not reach ${status}`);
+}
+
+async function waitForAgentStatusFromApi(baseUrl: string, convId: string, instanceId: string, status: string): Promise<void> {
+  for (let i = 0; i < 50; i += 1) {
+    const response = await fetch(`${baseUrl}/api/conversations/${convId}/agents`);
+    const body = (await response.json()) as { agents: Array<{ instanceId: string; status: string }> };
+    if (body.agents.find((agent) => agent.instanceId === instanceId)?.status === status) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(`agent ${instanceId} did not reach ${status}`);
+}
+
 test('createConversation requires a known project and writes nothing on failure', async () => {
   const { service } = await withProject();
   const bad = await service.createConversation('deadbeefdeadbeef', 'orphan');
@@ -225,6 +243,7 @@ test('deleteConversation leaves data and streams intact when agent stop is uncon
     await service.say(conv.id, { model: 'user' }, 'hi');
     const added = await service.addAgent(conv.id, 'claude');
     assert.equal(added.ok, true);
+    if (added.ok) await waitForAgentStatus(service, conv.id, added.agent.instanceId, 'running');
     let closed = false;
     const client: SseClient = { write() {}, close() { closed = true; } };
     assert.ok(await service.subscribe(conv.id, client, 0));
@@ -263,6 +282,7 @@ test('removeProject leaves project and streams intact when agent stop is unconfi
     await service.say(conv.id, { model: 'user' }, 'hi');
     const added = await service.addAgent(conv.id, 'claude');
     assert.equal(added.ok, true);
+    if (added.ok) await waitForAgentStatus(service, conv.id, added.agent.instanceId, 'running');
     let closed = false;
     const client: SseClient = { write() {}, close() { closed = true; } };
     assert.ok(await service.subscribe(conv.id, client, 0));
@@ -401,6 +421,8 @@ test('startServer close stops tmux-owned agents', async () => {
       body: JSON.stringify({ kind: 'claude' }),
     });
     assert.equal(agent.status, 200);
+    const agentBody = (await agent.json()) as { agent: { instanceId: string } };
+    await waitForAgentStatusFromApi(started.url, body.conversation.id, agentBody.agent.instanceId, 'running');
 
     await started.close();
 
@@ -433,6 +455,8 @@ test('startServer close releases resources even when agent stop is unconfirmed',
       body: JSON.stringify({ kind: 'claude' }),
     });
     assert.equal(agent.status, 200);
+    const agentBody = (await agent.json()) as { agent: { instanceId: string } };
+    await waitForAgentStatusFromApi(started.url, body.conversation.id, agentBody.agent.instanceId, 'running');
     const stream = await fetch(`${started.url}/api/conversations/${body.conversation.id}/events`);
     const reader = stream.body!.getReader();
 

@@ -1,4 +1,6 @@
-import { chmod, readFile, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 /** True for any non-null object; the precondition every sidecar type guard shares. */
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -18,6 +20,14 @@ export async function readJsonSidecar<T>(path: string, guard: (value: unknown) =
 
 /** Write a JSON sidecar with current-user-private permissions. */
 export async function writeJsonPrivate(path: string, value: unknown): Promise<void> {
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await chmod(path, 0o600);
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const tmp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    await chmod(tmp, 0o600);
+    await rename(tmp, path);
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }

@@ -1,18 +1,16 @@
-import { randomBytes } from 'node:crypto';
 import { basename, normalize } from 'node:path';
-
-const PROJECT_ID_RE = /^[0-9a-f]{16}$/;
+import { hexId, isHexId } from '../ids.ts';
 
 /** A high-entropy, URL-safe project handle. Stored in `project.json` and used as
  *  the `:id` path segment in `/api/projects/:id`, so it must never contain `#` or
  *  `/`. Mirrors `conversationId()`; the encoded directory name (which does contain
  *  `#`) is never used as the public id. */
 export function projectId(): string {
-  return randomBytes(8).toString('hex');
+  return hexId();
 }
 
 export function isProjectId(id: string): boolean {
-  return PROJECT_ID_RE.test(id);
+  return isHexId(id);
 }
 
 /** Lexically normalize an absolute path: resolve `.`/`..`, collapse `//`, and

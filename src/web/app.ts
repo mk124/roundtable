@@ -1,7 +1,8 @@
 import { ConversationApi, RECONNECT_DELAY_MS, streamEvents } from './client.ts';
-import type { ActivityEntry, ConversationDTO, EventDTO, ProjectDTO, ViewDTO } from './client.ts';
+import type { ActivityEntry, AgentDto, AgentKind, ConversationDTO, EventDTO, ProjectDTO, ViewDTO } from './client.ts';
+import { fillAgentRoster, renderAgentBar, syncAgentAddButton, TMUX_REQUIRED, type AgentBarActions, type AgentBarState } from './agent-bar.ts';
 import { renderContent } from './render-content.ts';
-import { agentAccent, composerState } from './ui-state.ts';
+import { agentAccent, composerState, el } from './ui-state.ts';
 
 interface SidebarFocus {
   action: string;
@@ -23,6 +24,11 @@ export class App {
   private view: ViewDTO | null = null;
   private activity: ActivityEntry[] = [];
   private activityHost: HTMLElement | null = null;
+  private agents: AgentDto[] = [];
+  private agentsHost: HTMLElement | null = null;
+  private tmuxAvailable = false;
+  private agentMenuOpen = false;
+  private agentMenuDismiss: ((e: Event) => void) | null = null;
   private jumpToBottomButton: HTMLButtonElement | null = null;
   private activityTimer: number | null = null;
   private sse: 'connected' | 'reconnecting' | 'disconnected' = 'disconnected';
@@ -30,6 +36,7 @@ export class App {
   private conversationEpoch = 0;
   private refreshSeq = 0;
   private appliedRefreshSeq = 0;
+  private agentRefreshSeq = 0;
   private listSeq = 0;
   private readonly removedConversationIds = new Set<string>();
   private readonly collapsedProjects = new Set<string>();
@@ -96,6 +103,7 @@ export class App {
   private async openConversation(id: string): Promise<void> {
     if (id === this.conversationId && this.view && this.renderedConvId === id) {
       await this.refresh();
+      void this.refreshAgents(id);
       if (this.conversationId === id && this.view && (!this.sseAbort || this.sse !== 'connected')) this.connect(id);
       return;
     }
@@ -110,8 +118,11 @@ export class App {
     this.composerVersion++;
     this.sendError = null;
     this.clearActivity();
+    this.agents = [];
+    this.setAgentMenu(false);
     this.sse = 'connected';
     this.render();
+    void this.refreshAgents(id);
     await this.refresh();
     if (!this.isCurrentConversation(id, epoch)) return;
     if (this.view) this.connect(id);
@@ -143,6 +154,7 @@ export class App {
       onOpen: () => {
         if (controller.signal.aborted || this.sseAbort !== controller || !this.isCurrentConversation(id, epoch)) return;
         this.sse = 'connected';
+        void this.refreshAgents(id);
         this.render();
       },
       onMessage: () => {
@@ -150,6 +162,9 @@ export class App {
       },
       onActivity: (active) => {
         if (!controller.signal.aborted && this.isCurrentConversation(id, epoch)) this.onActivity(active);
+      },
+      onAgents: () => {
+        if (!controller.signal.aborted && this.isCurrentConversation(id, epoch)) void this.refreshAgents(id);
       },
       onMissing: () => {
         if (!controller.signal.aborted && this.sseAbort === controller && this.isCurrentConversation(id, epoch)) this.clearMissingConversation(id);
@@ -233,6 +248,9 @@ export class App {
     this.composerVersion++;
     this.view = null;
     this.clearActivity();
+    this.agents = [];
+    this.agentsHost = null;
+    this.setAgentMenu(false);
   }
 
   private clearMissingConversation(id: string): void {
@@ -536,17 +554,134 @@ export class App {
 
   private renderHeader(): HTMLElement {
     const header = el(this.doc, 'div', 'chat__header');
+    const titleRow = el(this.doc, 'div', 'chat__titlerow');
     const conv = this.findConversation(this.conversationId);
-    header.appendChild(el(this.doc, 'h1', 'chat__title', conv?.title ?? 'Conversation'));
+    titleRow.appendChild(el(this.doc, 'h1', 'chat__title', conv?.title ?? 'Conversation'));
     const id = this.conversationId;
     if (id) {
       const copy = el(this.doc, 'button', 'chat__copy', `⧉ ${id}`) as HTMLButtonElement;
       copy.type = 'button';
       copy.title = 'Copy this conversation id — paste it to an agent to let it join';
       copy.onclick = () => void this.copyId(copy, id);
-      header.appendChild(copy);
+      titleRow.appendChild(copy);
     }
+    header.appendChild(titleRow);
+    if (id) header.appendChild(this.renderAgentBar(id));
     return header;
+  }
+
+  /** The control row beneath the title: the `+` add-agent button and the roster. */
+  private renderAgentBar(conversationId: string): HTMLElement {
+    const { bar, roster } = renderAgentBar(this.doc, this.agentBarState(conversationId), this.agentBarActions(conversationId));
+    this.agentsHost = roster;
+    return bar;
+  }
+
+  private agentBarState(conversationId: string): AgentBarState {
+    return { conversationId, agents: this.agents, tmuxAvailable: this.tmuxAvailable, menuOpen: this.agentMenuOpen };
+  }
+
+  private agentBarActions(conversationId: string): AgentBarActions {
+    return {
+      toggleMenu: () => this.setAgentMenu(!this.agentMenuOpen),
+      addAgent: (kind) => void this.addAgent(conversationId, kind),
+      stopAgent: (agent) => this.runAgentAction(conversationId, () => this.api.stopAgent(conversationId, agent.instanceId)),
+      resumeAgent: (agent) => this.runAgentAction(conversationId, () => this.api.resumeAgent(conversationId, agent.instanceId)),
+      removeAgent: (agent) => this.runAgentAction(conversationId, () => this.api.removeAgent(conversationId, agent.instanceId)),
+      stopAgents: (agents) => this.runAgentBatch(conversationId, agents, (agent) => this.api.stopAgent(conversationId, agent.instanceId)),
+      resumeAgents: (agents) => this.runAgentBatch(conversationId, agents, (agent) => this.api.resumeAgent(conversationId, agent.instanceId)),
+      onActionError: () => {
+        this.announce('Agent action failed.');
+        void this.refreshAgents(conversationId);
+      },
+    };
+  }
+
+  /** Open or close the kind menu by class (CSP forbids inline style), wiring an
+   *  outside-pointerdown / Escape dismissal while it is open. */
+  private setAgentMenu(open: boolean): void {
+    this.agentMenuOpen = open;
+    const plus = this.root.querySelector<HTMLButtonElement>('.agentbar__plus');
+    this.root.querySelector('.agentbar .menu')?.classList.toggle('menu--open', open);
+    plus?.setAttribute('aria-expanded', String(open));
+    if (this.agentMenuDismiss) {
+      this.doc.removeEventListener('pointerdown', this.agentMenuDismiss);
+      this.doc.removeEventListener('keydown', this.agentMenuDismiss);
+      this.agentMenuDismiss = null;
+    }
+    if (!open) return;
+    this.agentMenuDismiss = (e: Event) => {
+      if (e.type === 'keydown' && (e as KeyboardEvent).key !== 'Escape') return;
+      if (e.type === 'pointerdown' && (e.target as Element | null)?.closest('.agentbar__add')) return;
+      this.setAgentMenu(false);
+      plus?.focus();
+    };
+    this.doc.addEventListener('pointerdown', this.agentMenuDismiss);
+    this.doc.addEventListener('keydown', this.agentMenuDismiss);
+  }
+
+  private async addAgent(conversationId: string, kind: AgentKind): Promise<void> {
+    this.setAgentMenu(false);
+    if (!this.tmuxAvailable) {
+      window.alert(TMUX_REQUIRED);
+      return;
+    }
+    const res = await this.api.addAgent(conversationId, kind);
+    if (!res.ok) {
+      window.alert(res.error ?? 'could not add agent');
+      await this.refreshAgents(conversationId);
+      return;
+    }
+    await this.refreshAgents(conversationId);
+  }
+
+  /** Refetch the conversation's agents + tmux availability, then refill the roster. */
+  private async refreshAgents(conversationId: string): Promise<void> {
+    if (conversationId !== this.conversationId) return;
+    const seq = ++this.agentRefreshSeq;
+    let result: Awaited<ReturnType<ConversationApi['listAgents']>>;
+    try {
+      result = await this.api.listAgents(conversationId);
+    } catch {
+      return; // conversation gone; leave the roster as-is
+    }
+    if (seq !== this.agentRefreshSeq || conversationId !== this.conversationId || !Array.isArray(result.agents)) return;
+    const tmuxAvailable = result.tmuxAvailable !== false;
+    if (tmuxAvailable === this.tmuxAvailable && sameAgents(this.agents, result.agents)) return;
+    const availabilityChanged = tmuxAvailable !== this.tmuxAvailable;
+    this.tmuxAvailable = tmuxAvailable;
+    this.agents = result.agents;
+    if (availabilityChanged) {
+      syncAgentAddButton(this.root, this.tmuxAvailable, () => this.setAgentMenu(!this.agentMenuOpen));
+      if (!this.tmuxAvailable) this.setAgentMenu(false);
+    }
+    this.fillAgents();
+  }
+
+  /** Surgically refill the agent roster from current state into its own host
+   *  (like fillActivity; the header is not rebuilt by the live update path). */
+  private fillAgents(): void {
+    const host = this.agentsHost;
+    const conversationId = this.conversationId;
+    if (!host || !conversationId) return;
+    fillAgentRoster(this.doc, host, this.agentBarState(conversationId), this.agentBarActions(conversationId));
+  }
+
+  private async runAgentBatch(conversationId: string, agents: AgentDto[], action: (agent: AgentDto) => Promise<{ ok: boolean; error?: string }>): Promise<void> {
+    const failures: string[] = [];
+    const results = await Promise.allSettled(agents.map((agent) => action(agent)));
+    for (const result of results) {
+      if (result.status === 'rejected') failures.push(result.reason instanceof Error ? result.reason.message : 'agent action failed');
+      else if (!result.value.ok) failures.push(result.value.error ?? 'agent action failed');
+    }
+    await this.refreshAgents(conversationId);
+    if (failures.length > 0) throw new Error(failures[0]);
+  }
+
+  private async runAgentAction(conversationId: string, action: () => Promise<{ ok: boolean; error?: string }>): Promise<void> {
+    const result = await action();
+    if (!result.ok) throw new Error(result.error ?? 'agent action failed');
+    await this.refreshAgents(conversationId);
   }
 
   private fillBanners(host: HTMLElement, view: ViewDTO): void {
@@ -746,8 +881,12 @@ export class App {
   private async createConversation(projectId: string): Promise<void> {
     const title = window.prompt('Conversation title:') ?? 'Untitled';
     const result = await this.api.createConversation(projectId, title);
-    if (result.ok) await this.loadProjects();
-    else window.alert(result.error ?? 'Could not create conversation.'); // surface the server's reason, leave the sidebar as-is
+    if (result.ok && result.conversation) {
+      await this.loadProjects();
+      await this.openConversation(result.conversation.id);
+    } else {
+      window.alert(result.error ?? 'Could not create conversation.'); // surface the server's reason, leave the sidebar as-is
+    }
   }
 
   private async deleteConversation(conv: ConversationDTO): Promise<void> {
@@ -777,13 +916,6 @@ export class App {
   }
 }
 
-function el(doc: Document, tag: string, className?: string, text?: string): HTMLElement {
-  const node = doc.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
-
 /** Whether the log is scrolled to (or within a hair of) the bottom; the small
  *  tolerance absorbs fractional pixels from zoom / high-DPI displays. */
 function atBottom(log: HTMLElement): boolean {
@@ -802,6 +934,18 @@ function emptyState(doc: Document, title: string, body: string): HTMLElement {
 function lastTwoSegments(path: string): string {
   const parts = path.split('/').filter(Boolean);
   return parts.slice(-2).join('/') || path;
+}
+
+function sameAgents(a: AgentDto[], b: AgentDto[]): boolean {
+  return a.length === b.length && a.every((agent, i) => {
+    const other = b[i];
+    return other !== undefined &&
+      agent.instanceId === other.instanceId &&
+      agent.kind === other.kind &&
+      agent.name === other.name &&
+      agent.status === other.status &&
+      agent.resumable === other.resumable;
+  });
 }
 
 const shortTime = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });

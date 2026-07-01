@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { conversation, messageEvent, pendingResponse, renderApp, testView, tick, withFetch } from './app-test-harness.ts';
+import { conversation, messageEvent, pendingResponse, project, renderApp, testView, tick, withFetch } from './app-test-harness.ts';
 import type { TestConversation, TestNode } from './app-test-harness.ts';
 
 const projectList = (conversations: TestConversation[]) => ({
-  projects: [{ id: 'p1', path: '/proj', title: 'proj', conversations }],
+  projects: [project('p1', 'proj', conversations, '/proj')],
 });
 
 const neverResponse = () => new Promise<Response>(() => {});

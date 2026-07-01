@@ -20,6 +20,10 @@ function activityChunk(active: ActivityEntry[]): string {
   return `event: activity\ndata: ${JSON.stringify({ active })}\n\n`;
 }
 
+function agentsChunk(): string {
+  return 'event: agents\ndata: {}\n\n';
+}
+
 /**
  * The live channel for one conversation. It carries two kinds of update:
  * durable message bumps (tagged with the event-count cursor, buffered for
@@ -43,6 +47,11 @@ export class SseHub {
     const chunk = `id: ${id}\nevent: message\ndata: ${JSON.stringify(data)}\n\n`;
     this.buffer.push({ id, chunk });
     if (this.buffer.length > this.bufferLimit) this.buffer.shift();
+    for (const client of this.clients) client.write(chunk);
+  }
+
+  publishAgents(): void {
+    const chunk = agentsChunk();
     for (const client of this.clients) client.write(chunk);
   }
 

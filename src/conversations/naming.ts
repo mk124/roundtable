@@ -1,6 +1,4 @@
-import { randomBytes } from 'node:crypto';
-
-const CONVERSATION_ID_RE = /^[0-9a-f]{16}$/;
+import { hexId, isHexId, shortId } from '../ids.ts';
 
 /** Lowercase the text and collapse anything outside `[a-z0-9]` into single
  *  dashes, trimming leading/trailing dashes and capping length. */
@@ -13,18 +11,14 @@ export function slugify(text: string, maxLength = 40): string {
     .replace(/-+$/g, '');
 }
 
-export function shortId(): string {
-  return randomBytes(4).toString('hex');
-}
-
 /** A high-entropy conversation id. Stored only in sidecar metadata, never in
  *  the human-readable Markdown. */
 export function conversationId(): string {
-  return randomBytes(8).toString('hex');
+  return hexId();
 }
 
 export function isConversationId(id: string): boolean {
-  return CONVERSATION_ID_RE.test(id);
+  return isHexId(id);
 }
 
 /**

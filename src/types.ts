@@ -1,9 +1,4 @@
-/**
- * Shared domain types for roundtable: a passive chat room.
- *
- * Type-only by design: the only runtime config lives in `src/config/limits.ts`,
- * so every layer can `import type` from here without a runtime dependency cycle.
- */
+/** Shared domain types and protocol constants for roundtable. */
 
 /* Events */
 
@@ -28,6 +23,8 @@ export interface MessageEvent extends EventMetadata {
   author: string;
   body: string;
 }
+
+export const DISPLAY_AUTHOR_SEPARATOR = ' · ';
 
 /**
  * A machine-actionable system event. The only kind a passive chat room produces

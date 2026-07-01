@@ -130,20 +130,6 @@ function findByAttrs(node: TestNode, selector: string): TestNode | null {
   return null;
 }
 
-export function findAllByClass(node: TestNode, className: string): TestNode[] {
-  const out: TestNode[] = [];
-  const walk = (n: TestNode): void => {
-    if (n.className.split(/\s+/).includes(className)) out.push(n);
-    for (const child of n.children) walk(child);
-  };
-  walk(node);
-  return out;
-}
-
-export function firstSidebarConversationId(doc: { app: TestNode }): string | null {
-  return doc.app.querySelector<TestNode>('[data-sidebar-action="open"]')?.getAttribute('data-conversation-id') ?? null;
-}
-
 export const fakeDoc = () => new TestDocument() as unknown as Document;
 
 export const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -204,23 +190,8 @@ export const messageEvent = (value: string, id = value): TestEvent => ({
 export const testView = (cursor = 1, events: TestEvent[] = [], readOnly = false): TestView => ({ cursor, readOnly, events });
 
 export function pendingResponse(): { response: Promise<Response>; resolve: (value: Response) => void } {
-  let resolve!: (value: Response) => void;
-  const response = new Promise<Response>((done) => (resolve = done));
-  return { response, resolve };
-}
-
-/** Install a stub `window` carrying the given prompt/confirm/alert (and no-op
- *  timers) for the duration of `run`. */
-export async function withWindow<T>(stub: Record<string, unknown>, run: () => Promise<T>): Promise<T> {
-  const host = globalThis as unknown as Record<string, unknown>;
-  const original = host.window;
-  host.window = { setTimeout: () => 1, clearTimeout: () => {}, setInterval: () => 1, clearInterval: () => {}, ...stub };
-  try {
-    return await run();
-  } finally {
-    if (original !== undefined) host.window = original;
-    else Reflect.deleteProperty(host, 'window');
-  }
+  const { promise, resolve } = Promise.withResolvers<Response>();
+  return { response: promise, resolve };
 }
 
 export function renderApp(opts: { projects?: TestProject[]; conversations?: TestConversation[]; conversationId?: string | null; view?: TestView | null } = {}): {

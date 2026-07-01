@@ -3,16 +3,25 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { stripTypeScriptTypes } from 'node:module';
 import type { ConversationMetadata, ProjectMetadata, RoundtableEvent } from '../types.ts';
+import { type AgentDto, type AgentKind, isAgentKind } from '../agents/record.ts';
 import { renderMarkdown } from './render.ts';
 import { cspHeader } from './security.ts';
 import type { RedactingLogger } from './logging.ts';
 import type { ActivityEntry, SseClient } from './sse.ts';
+import { isRecord } from '../storage/sidecar.ts';
 
 export interface ConversationView {
   readOnly: boolean;
   events: readonly RoundtableEvent[];
   /** The conversation's event count: the cursor for incremental reads and SSE. */
   cursor: number;
+}
+
+export interface SayIdentity {
+  /** Required display model, e.g. `Claude Opus 4.8` or `user`. */
+  model: string;
+  /** Optional short room name used to distinguish multiple agents on one model. */
+  name?: string;
 }
 
 /** A project with its conversations embedded; one sidebar group. */
@@ -28,14 +37,19 @@ export interface ProjectWithConversations {
 export interface RoundtableApp {
   listProjects(): Promise<ProjectWithConversations[]>;
   addProject(path: string): Promise<{ ok: true; project: ProjectMetadata } | { ok: false; error: string }>;
-  removeProject(projectId: string): Promise<{ ok: true } | { ok: false; error: string }>;
+  removeProject(projectId: string): Promise<{ ok: true } | { ok: false; error: string; status?: 404 | 503 }>;
   createConversation(projectId: string, title: string): Promise<{ ok: true; conversation: ConversationMetadata } | { ok: false; error: string }>;
-  deleteConversation(conversationId: string): Promise<{ ok: true } | { ok: false; error: string }>;
+  deleteConversation(conversationId: string): Promise<{ ok: true } | { ok: false; error: string; status?: 404 | 503 }>;
   view(conversationId: string): Promise<ConversationView | null>;
-  say(conversationId: string, author: string, text: string): Promise<{ ok: true; cursor: number } | { ok: false; error: string }>;
+  say(conversationId: string, identity: SayIdentity, text: string): Promise<{ ok: true; cursor: number } | { ok: false; error: string }>;
   setActivity(conversationId: string, author: string, state: string | null): Promise<{ ok: true } | { ok: false; error: string }>;
   getActivity(conversationId: string): Promise<ActivityEntry[] | null>;
   subscribe(conversationId: string, client: SseClient, lastEventId: number): Promise<(() => void) | null>;
+  listAgents(conversationId: string): Promise<{ tmuxAvailable: boolean; agents: AgentDto[] } | null>;
+  addAgent(conversationId: string, kind: AgentKind): Promise<{ ok: true; agent: AgentDto } | { ok: false; error: string; status: 400 | 404 | 429 | 503 }>;
+  resumeAgent(conversationId: string, instanceId: string): Promise<{ ok: boolean; error?: string; status?: 400 | 404 | 429 | 503 }>;
+  stopAgent(conversationId: string, instanceId: string): Promise<{ ok: boolean; error?: string; status?: 404 | 503 }>;
+  removeAgent(conversationId: string, instanceId: string): Promise<{ ok: boolean; error?: string; status?: 404 | 503 }>;
 }
 
 export interface ServerDeps {
@@ -97,10 +111,13 @@ export function createServer(deps: ServerDeps): http.Server {
     const seg = url.pathname.slice('/api/'.length).split('/').filter(Boolean);
     const [resource, id, action] = seg;
 
+    // CSRF guard: state changes (POST/DELETE) from a foreign Origin are refused;
+    // GET reads and the agents' no-Origin requests pass.
+    if ((resource === 'projects' || resource === 'conversations') && req.method !== 'GET' && crossSite(req)) {
+      return forbidden(res);
+    }
+
     if (resource === 'projects') {
-      // Same CSRF guard as conversations: state changes from a foreign Origin are
-      // refused; GET reads and the agents' no-Origin requests pass.
-      if (req.method !== 'GET' && crossSite(req)) return forbidden(res);
       if (!id) {
         if (req.method === 'GET') {
           const projects = await deps.app.listProjects();
@@ -119,14 +136,11 @@ export function createServer(deps: ServerDeps): http.Server {
         return result.ok ? json(res, 200, { conversation: conversationSummary(result.conversation) }) : json(res, 400, { error: result.error });
       } else if (!action && req.method === 'DELETE') {
         const result = await deps.app.removeProject(id);
-        return result.ok ? json(res, 200, result) : notFound(res);
+        return result.ok ? json(res, 200, result) : result.status === 503 ? json(res, 503, { error: result.error }) : notFound(res);
       }
     }
 
     if (resource === 'conversations') {
-      // CSRF guard: refuse any state change (POST/DELETE) from a foreign Origin;
-      // GET reads and the agents' no-Origin requests pass (see crossSite above).
-      if (req.method !== 'GET' && crossSite(req)) return forbidden(res);
       if (!id) {
         return notFound(res); // the flat list and create moved under /api/projects
       } else if (!action && req.method === 'GET') {
@@ -134,7 +148,7 @@ export function createServer(deps: ServerDeps): http.Server {
         return view ? json(res, 200, viewDTO(view)) : notFound(res);
       } else if (!action && req.method === 'DELETE') {
         const result = await deps.app.deleteConversation(id);
-        return result.ok ? json(res, 200, result) : notFound(res);
+        return result.ok ? json(res, 200, result) : result.status === 503 ? json(res, 503, { error: result.error }) : notFound(res);
       } else if (action === 'messages' && req.method === 'GET') {
         const view = await deps.app.view(id);
         if (!view) return notFound(res);
@@ -145,7 +159,7 @@ export function createServer(deps: ServerDeps): http.Server {
       } else if (action === 'say' && req.method === 'POST') {
         const body = await readJson(req);
         if (!body.ok) return json(res, body.status, { error: body.error });
-        const result = await deps.app.say(id, String(body.value.author ?? ''), String(body.value.text ?? ''));
+        const result = await deps.app.say(id, sayIdentity(body.value), String(body.value.text ?? ''));
         return json(res, result.ok ? 200 : 400, result);
       } else if (action === 'activity' && req.method === 'GET') {
         const active = await deps.app.getActivity(id);
@@ -156,6 +170,28 @@ export function createServer(deps: ServerDeps): http.Server {
         const state = body.value.state == null ? null : String(body.value.state);
         const result = await deps.app.setActivity(id, String(body.value.author ?? ''), state);
         return json(res, result.ok ? 200 : 400, result);
+      } else if (action === 'agents') {
+        const instanceId = seg[3];
+        const sub = seg[4];
+        if (!instanceId && req.method === 'GET') {
+          const result = await deps.app.listAgents(id);
+          return result ? json(res, 200, result) : notFound(res);
+        } else if (!instanceId && req.method === 'POST') {
+          const body = await readJson(req);
+          if (!body.ok) return json(res, body.status, { error: body.error });
+          if (!isAgentKind(body.value.kind)) return json(res, 400, { error: 'unknown agent kind' });
+          const result = await deps.app.addAgent(id, body.value.kind);
+          return result.ok ? json(res, 200, { agent: result.agent }) : json(res, result.status, { error: result.error });
+        } else if (instanceId && req.method === 'DELETE' && !sub) {
+          const result = await deps.app.removeAgent(id, instanceId);
+          return agentMutationResult(res, result);
+        } else if (instanceId && req.method === 'POST' && sub === 'resume') {
+          const result = await deps.app.resumeAgent(id, instanceId);
+          return agentMutationResult(res, result);
+        } else if (instanceId && req.method === 'POST' && sub === 'stop') {
+          const result = await deps.app.stopAgent(id, instanceId);
+          return agentMutationResult(res, result);
+        }
       }
     }
 
@@ -163,19 +199,60 @@ export function createServer(deps: ServerDeps): http.Server {
   }
 
   async function openSse(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+    const lastEventId = Number(header(req, 'last-event-id')) || 0;
+    const queued: string[] = [];
+    let open = false;
+    let closed = false;
+    let unsubscribe: (() => void) | null = null;
+    const onClose = () => {
+      closed = true;
+      const fn = unsubscribe;
+      unsubscribe = null;
+      fn?.();
+    };
+    req.on('close', onClose);
+    const client: SseClient = {
+      write: (chunk) => {
+        if (!open) queued.push(chunk);
+        else {
+          try { res.write(chunk); } catch { /* client gone */ }
+        }
+      },
+      close: () => {
+        if (!open) closed = true;
+        else {
+          try { res.end(); } catch { /* already ended */ }
+        }
+      },
+    };
+    const subscribed = await deps.app.subscribe(id, client, lastEventId);
+    if (!subscribed) {
+      req.off('close', onClose);
+      if (closed) return;
+      return notFound(res);
+    }
+    if (closed) {
+      req.off('close', onClose);
+      subscribed();
+      try { res.end(); } catch { /* already ended */ }
+      return;
+    }
+    unsubscribe = () => {
+      req.off('close', onClose);
+      subscribed();
+    };
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.statusCode = 200;
-    const lastEventId = Number(header(req, 'last-event-id')) || 0;
-    const client: SseClient = {
-      write: (chunk) => { try { res.write(chunk); } catch { /* client gone */ } },
-      close: () => { try { res.end(); } catch { /* already ended */ } },
-    };
-    const unsubscribe = await deps.app.subscribe(id, client, lastEventId);
-    if (!unsubscribe) return notFound(res);
+    open = true;
+    for (const chunk of queued) res.write(chunk);
+    if (closed) return void res.end();
     res.write(': connected\n\n');
-    req.on('close', unsubscribe);
+  }
+
+  function agentMutationResult(res: http.ServerResponse, result: { ok: boolean; error?: string; status?: 400 | 404 | 429 | 503 }): void {
+    return result.ok ? json(res, 200, { ok: true }) : json(res, result.status ?? 404, { error: result.error ?? 'not found' });
   }
 
   async function serveStatic(pathname: string, res: http.ServerResponse): Promise<void> {
@@ -230,6 +307,12 @@ function viewDTO(view: ConversationView) {
   return { readOnly: view.readOnly, events: view.events.map(eventDTO), cursor: view.cursor };
 }
 
+function sayIdentity(body: Record<string, unknown>): SayIdentity {
+  const model = String(body.model ?? '');
+  const name = body.name == null ? '' : String(body.name);
+  return name.trim() ? { model, name } : { model };
+}
+
 // HTTP helpers
 
 async function readJson(req: http.IncomingMessage): Promise<JsonReadResult> {
@@ -245,7 +328,7 @@ async function readJson(req: http.IncomingMessage): Promise<JsonReadResult> {
   if (!text) return { ok: true, value: {} };
   try {
     const parsed = JSON.parse(text);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    if (isRecord(parsed) && !Array.isArray(parsed)) {
       return { ok: true, value: parsed as Record<string, unknown> };
     }
   } catch {
@@ -263,6 +346,7 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
 function sendText(res: http.ServerResponse, status: number, body: string, contentType: string): void {
   res.statusCode = status;
   res.setHeader('Content-Type', contentType);
+  res.setHeader('Cache-Control', 'no-store');
   res.end(body);
 }
 

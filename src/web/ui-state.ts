@@ -4,7 +4,16 @@ export function composerState(opts: { hasConversation: boolean; readOnly: boolea
   return { disabled: false, reason: null };
 }
 
-export function agentAccent(author: string | undefined): 'claude' | 'gpt' | 'gemini' | null {
+export function el(doc: Document, tag: string, className?: string, text?: string): HTMLElement {
+  const node = doc.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+export type AgentAccent = 'claude' | 'gpt' | 'gemini';
+
+export function agentAccent(author: string | undefined): AgentAccent | null {
   const name = author?.toLowerCase() ?? '';
   if (/claude|opus|sonnet|haiku|fable|mythos/.test(name)) return 'claude';
   if (/gpt|codex/.test(name)) return 'gpt';

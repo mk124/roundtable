@@ -1,10 +1,12 @@
-import { mkdir, readdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { ConversationMetadata } from '../types.ts';
+import { agentRecordArray, type AgentRecord } from '../agents/record.ts';
 import { isRecord, readJsonSidecar, writeJsonPrivate } from '../storage/sidecar.ts';
 import { conversationFilename, conversationId, isConversationId } from './naming.ts';
 
 const META_SUFFIX = '.meta.json';
+const AGENTS_SUFFIX = '.agents.json';
 
 /** Only these fields are mutable; the id and filename are fixed at creation. */
 export type ConversationUpdate = Partial<
@@ -66,7 +68,30 @@ export class ConversationStore {
     return next;
   }
 
-  /** Remove a conversation's Markdown log and its sidecar. Returns false when no
+  /** Read a conversation's agent records, or `[]` when none are stored. */
+  async readAgents(id: string): Promise<AgentRecord[]> {
+    return (await this.readAgentsForReconcile(id)) ?? [];
+  }
+
+  /** Read agent records for reconcile. Null means the sidecar is present but
+   *  corrupt, so callers must not treat live sessions as orphaned. */
+  async readAgentsForReconcile(id: string): Promise<AgentRecord[] | null> {
+    if (!isConversationId(id)) return [];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(this.agentsPath(id), 'utf8'));
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'ENOENT' ? [] : null;
+    }
+    return agentRecordArray(parsed);
+  }
+
+  /** Replace a conversation's agent records. */
+  async writeAgents(id: string, records: AgentRecord[]): Promise<void> {
+    await writeJsonPrivate(this.agentsPath(id), records);
+  }
+
+  /** Remove a conversation's Markdown log and its sidecars. Returns false when no
    *  such conversation exists; missing files are tolerated so a partial earlier
    *  deletion still completes. */
   async delete(id: string): Promise<boolean> {
@@ -74,6 +99,7 @@ export class ConversationStore {
     if (!meta) return false;
     await rm(this.conversationFilePath(meta), { force: true });
     await rm(this.metaPath(id), { force: true });
+    await rm(this.agentsPath(id), { force: true });
     return true;
   }
 
@@ -84,6 +110,10 @@ export class ConversationStore {
 
   private metaPath(id: string): string {
     return join(this.dir, `${id}${META_SUFFIX}`);
+  }
+
+  private agentsPath(id: string): string {
+    return join(this.dir, `${id}${AGENTS_SUFFIX}`);
   }
 
   private async writeMeta(meta: ConversationMetadata): Promise<void> {

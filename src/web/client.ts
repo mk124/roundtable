@@ -1,7 +1,8 @@
 import type { RenderNode } from '../server/render.ts';
 import type { ActivityEntry } from '../server/sse.ts';
+import type { AgentDto, AgentKind } from '../agents/record.ts';
 
-export type { ActivityEntry };
+export type { ActivityEntry, AgentDto, AgentKind };
 
 export interface EventDTO {
   id: string;
@@ -36,7 +37,7 @@ export class ConversationApi {
   listProjects = () => this.get<{ projects: ProjectDTO[] }>('/api/projects');
   addProject = (path: string) => this.post('/api/projects', { path });
   removeProject = (id: string) => this.send('DELETE', `/api/projects/${id}`);
-  createConversation = (projectId: string, title: string) => this.post(`/api/projects/${projectId}/conversations`, { title });
+  createConversation = (projectId: string, title: string) => this.post<{ conversation: ConversationDTO }>(`/api/projects/${projectId}/conversations`, { title });
   deleteConversation = (id: string) => this.send('DELETE', `/api/conversations/${id}`);
   view = async (id: string): Promise<ViewDTO | null> => {
     const url = `/api/conversations/${id}`;
@@ -45,7 +46,12 @@ export class ConversationApi {
     if (!res.ok) throw new Error(`GET ${url} failed`);
     return (await res.json()) as ViewDTO;
   };
-  say = (id: string, text: string) => this.post(`/api/conversations/${id}/say`, { author: 'user', text });
+  say = (id: string, text: string) => this.post(`/api/conversations/${id}/say`, { model: 'user', text });
+  listAgents = (id: string) => this.get<{ tmuxAvailable: boolean; agents: AgentDto[] }>(`/api/conversations/${id}/agents`);
+  addAgent = (id: string, kind: AgentKind) => this.post<{ agent: AgentDto }>(`/api/conversations/${id}/agents`, { kind });
+  resumeAgent = (id: string, instanceId: string) => this.post(`/api/conversations/${id}/agents/${instanceId}/resume`, {});
+  stopAgent = (id: string, instanceId: string) => this.post(`/api/conversations/${id}/agents/${instanceId}/stop`, {});
+  removeAgent = (id: string, instanceId: string) => this.send('DELETE', `/api/conversations/${id}/agents/${instanceId}`);
 
   private async get<T>(url: string): Promise<T> {
     const res = await fetch(url);
@@ -53,19 +59,19 @@ export class ConversationApi {
     return (await res.json()) as T;
   }
 
-  private post(url: string, body: unknown): Promise<{ ok: boolean; error?: string }> {
+  private post<T extends object = Record<string, never>>(url: string, body: unknown): Promise<{ ok: boolean; error?: string } & Partial<T>> {
     return this.send('POST', url, body);
   }
 
-  private async send(method: string, url: string, body?: unknown): Promise<{ ok: boolean; error?: string }> {
+  private async send<T extends object = Record<string, never>>(method: string, url: string, body?: unknown): Promise<{ ok: boolean; error?: string } & Partial<T>> {
     const init: RequestInit = { method };
     if (body !== undefined) {
       init.headers = { 'Content-Type': 'application/json' };
       init.body = JSON.stringify(body);
     }
     const res = await fetch(url, init);
-    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-    return { ok: res.ok && data.ok !== false, error: data.error };
+    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string } & Partial<T>;
+    return { ...data, ok: res.ok && data.ok !== false, error: data.error };
   }
 }
 
@@ -75,6 +81,7 @@ export interface StreamHandlers {
   onOpen?: () => void;
   onMessage: () => void;
   onActivity: (active: ActivityEntry[]) => void;
+  onAgents: () => void;
   onMissing: () => void;
   onDrop: () => void;
 }
@@ -137,5 +144,7 @@ function dispatchFrame(frame: string, handlers: StreamHandlers): void {
     }
   } else if (event === 'message') {
     handlers.onMessage();
+  } else if (event === 'agents') {
+    handlers.onAgents();
   }
 }
