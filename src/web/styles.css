@@ -11,6 +11,10 @@
   --muted: #6b6b75;
   --accent: #3a5bd9;
   --accent-text: #ffffff;
+  /* sidebar nav hover/selected: neutral grays, selected one step darker */
+  --nav-hover: #eeeeee;
+  --nav-active: #e6e6e6;
+  --nav-active-border: #d6d6d6;
   --danger: #b3261e;
   --warn: #8a6300;
   --warn-bg: #fff6e0;
@@ -34,6 +38,9 @@
     --muted: #9aa1ad;
     --accent: #6ea8fe;
     --accent-text: #07101f;
+    --nav-hover: #24272e;
+    --nav-active: #2b2f38;
+    --nav-active-border: #363b45;
     --danger: #f08a8a;
     --warn: #e8c479;
     --warn-bg: #2a2410;
@@ -190,25 +197,33 @@ textarea {
   padding: 7px 9px;
   cursor: pointer;
 }
-.nav-item:hover {
-  background: var(--surface-2);
-}
-.nav-item[aria-current="true"] {
-  background: var(--surface-2);
-  border-color: var(--border);
-}
 .nav-item--add {
   color: var(--muted);
 }
+.nav-item--add:hover {
+  background: var(--nav-hover);
+}
 
+/* Conversation rows: the whole row (title + delete) is the hover/selected
+   surface, so the ✕ sits inside the highlight instead of beside it. */
 .nav-row {
   display: flex;
   align-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+.nav-row:hover {
+  background: var(--nav-hover);
+}
+.nav-row:has(.nav-item[aria-current="true"]) {
+  background: var(--nav-active);
+  border-color: var(--nav-active-border);
 }
 .nav-row .nav-item {
   flex: 1;
   width: auto;
   min-width: 0;
+  border: 0;
 }
 .nav-row__del {
   flex: none;
