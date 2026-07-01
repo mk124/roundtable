@@ -16,8 +16,8 @@ export interface ParseResult {
 
 /**
  * Rebuild a conversation purely by scanning its Markdown. Correctness rests
- * only on the framing nonce, strict line-start markers, and the body checksum —
- * never on Markdown fence state — so unclosed fences, tilde/indented fences, and
+ * only on the framing nonce, strict line-start markers, and the body checksum,
+ * never on Markdown fence state, so unclosed fences, tilde/indented fences, and
  * malformed bodies cannot move an event boundary.
  */
 export function parseConversation(content: string): ParseResult {

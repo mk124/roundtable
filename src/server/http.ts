@@ -15,7 +15,7 @@ export interface ConversationView {
   cursor: number;
 }
 
-/** A project with its conversations embedded — one sidebar group. */
+/** A project with its conversations embedded; one sidebar group. */
 export interface ProjectWithConversations {
   project: ProjectMetadata;
   conversations: ConversationMetadata[];
@@ -78,7 +78,7 @@ export function createServer(deps: ServerDeps): http.Server {
         url.port === String(deps.port)
       );
     } catch {
-      return true; // unparseable Origin → refuse
+      return true; // unparseable Origin; refuse
     }
   };
 
@@ -197,7 +197,7 @@ export function createServer(deps: ServerDeps): http.Server {
   }
 }
 
-// ── DTO serialization (display-safe) ──────────────────────────────────────
+// DTO serialization (display-safe)
 
 function conversationSummary(meta: ConversationMetadata) {
   return { id: meta.id, title: meta.title, createdAt: meta.createdAt, lastActivityAt: meta.lastActivityAt, readOnly: meta.readOnly ?? false };
@@ -215,7 +215,7 @@ function projectDTO(group: ProjectWithConversations) {
   return { ...projectSummary(group.project), conversations: group.conversations.map(conversationSummary) };
 }
 
-/** The raw event as agents polling /messages consume it — no render tree. */
+/** The raw event as agents polling /messages consume it; no render tree. */
 function messageDTO(event: RoundtableEvent) {
   const base = { id: event.id, type: event.type, timestamp: event.timestamp };
   return event.type === 'message' ? { ...base, author: event.author, text: event.body } : base;
@@ -230,7 +230,7 @@ function viewDTO(view: ConversationView) {
   return { readOnly: view.readOnly, events: view.events.map(eventDTO), cursor: view.cursor };
 }
 
-// ── HTTP helpers ──────────────────────────────────────────────────────────
+// HTTP helpers
 
 async function readJson(req: http.IncomingMessage): Promise<JsonReadResult> {
   const chunks: Buffer[] = [];

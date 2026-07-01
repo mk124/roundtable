@@ -5,7 +5,7 @@ export interface SseClient {
   close?(): void;
 }
 
-/** An author's ephemeral presence — "thinking", "investigating code", etc.
+/** An author's ephemeral presence: "thinking", "investigating code", etc.
  *  Held in memory only, never persisted; gone on restart. */
 export interface ActivityEntry {
   author: string;
@@ -48,8 +48,8 @@ export class SseHub {
 
   /**
    * Set or clear an author's presence. A null/blank state clears it. Re-setting
-   * the same state is idempotent — it keeps the original `since` and emits
-   * nothing — so heartbeats don't reset the elapsed timer or spam clients.
+   * the same state is idempotent; it keeps the original `since` and emits
+   * nothing, so heartbeats don't reset the elapsed timer or spam clients.
    */
   setActivity(author: string, state: string | null): void {
     const name = author.trim();

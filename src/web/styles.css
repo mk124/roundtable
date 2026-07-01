@@ -87,7 +87,7 @@ textarea {
   min-height: 1em;
 }
 
-/* ── Two-pane workspace ─────────────────────────────────────────────── */
+/* Two-pane workspace */
 
 .app {
   display: grid;
@@ -113,7 +113,7 @@ textarea {
   padding: 10px 6px;
 }
 
-/* ── Project groups ─────────────────────────────────────────────────── */
+/* Project groups */
 
 .project {
   margin-top: 12px;
@@ -142,7 +142,7 @@ textarea {
   white-space: nowrap;
 }
 .project__title::before {
-  content: '▼'; /* disclosure caret; flipped to ▶ by .project--collapsed */
+  content: '▼'; /* disclosure caret; flipped to right caret by .project--collapsed */
   display: inline-block;
   margin-right: 6px;
   font-size: 10px;
@@ -251,7 +251,7 @@ textarea {
   border-color: var(--warn);
 }
 
-/* ── Chat ───────────────────────────────────────────────────────────── */
+/* Chat */
 
 .chat {
   display: flex;
@@ -463,7 +463,7 @@ textarea {
   padding: 2px 7px;
 }
 
-/* ── Activity (ephemeral presence) ──────────────────────────────────── */
+/* Activity (ephemeral presence) */
 
 .activity-host {
   display: flex;
@@ -518,7 +518,7 @@ textarea {
   }
 }
 
-/* ── Composer ───────────────────────────────────────────────────────── */
+/* Composer */
 
 .composer {
   padding: 0;
@@ -592,7 +592,7 @@ textarea {
   padding-left: 4px;
 }
 
-/* ── Banners / empty ────────────────────────────────────────────────── */
+/* Banners / empty */
 
 .banner {
   padding: 9px 18px;

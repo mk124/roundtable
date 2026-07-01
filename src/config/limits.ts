@@ -13,7 +13,7 @@ export const DEFAULT_SIZE_LIMITS: SizeLimits = {
   conversationTotalBytes: 50 * MiB,
 };
 
-/** UTF-8 byte length — the unit every size limit is measured in. */
+/** UTF-8 byte length; the unit every size limit is measured in. */
 export function utf8Bytes(text: string): number {
   return Buffer.byteLength(text, 'utf8');
 }

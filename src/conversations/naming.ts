@@ -13,15 +13,14 @@ export function slugify(text: string, maxLength = 40): string {
     .replace(/-+$/g, '');
 }
 
-/** A short, file-safe suffix that disambiguates conversation filenames. */
 export function shortId(): string {
-  return randomBytes(4).toString('hex'); // 8 hex chars
+  return randomBytes(4).toString('hex');
 }
 
 /** A high-entropy conversation id. Stored only in sidecar metadata, never in
  *  the human-readable Markdown. */
 export function conversationId(): string {
-  return randomBytes(8).toString('hex'); // 16 hex chars
+  return randomBytes(8).toString('hex');
 }
 
 export function isConversationId(id: string): boolean {

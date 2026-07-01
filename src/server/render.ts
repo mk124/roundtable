@@ -43,7 +43,7 @@ export function renderMarkdown(markdown: string): RenderNode[] {
 }
 
 /** Allow only http/https/mailto and relative URLs; reject any other scheme
- *  (javascript:, data:, file:, …) so dangerous links are never clickable. */
+ *  (javascript:, data:, file:, etc.) so dangerous links are never clickable. */
 function safeHref(href: string | null | undefined): string | null {
   if (!href) return null;
   const value = href.trim();
@@ -104,7 +104,7 @@ function convertBlocks(tokens: Token[]): RenderNode[] {
         convertInline(token.children ?? [], top());
         break;
       case 'html_block':
-        add({ type: 'text', value: token.content }); // raw HTML → literal text
+        add({ type: 'text', value: token.content }); // raw HTML -> literal text
         break;
       default:
         break; // thead/tbody wrappers, hr, etc. are flattened or dropped
@@ -137,8 +137,8 @@ function convertInline(tokens: Token[], parent: RenderNode): void {
         break;
       }
       case 'link_close': close(); break;
-      case 'image': add({ type: 'text', value: token.content }); break; // image → alt text only
-      case 'html_inline': add({ type: 'text', value: token.content }); break; // raw HTML → text
+      case 'image': add({ type: 'text', value: token.content }); break; // image -> alt text only
+      case 'html_inline': add({ type: 'text', value: token.content }); break; // raw HTML -> text
       default:
         if (token.content) add({ type: 'text', value: token.content });
         break;

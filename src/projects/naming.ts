@@ -8,7 +8,7 @@ const PROJECT_ID_RE = /^[0-9a-f]{16}$/;
  *  `/`. Mirrors `conversationId()`; the encoded directory name (which does contain
  *  `#`) is never used as the public id. */
 export function projectId(): string {
-  return randomBytes(8).toString('hex'); // 16 hex chars
+  return randomBytes(8).toString('hex');
 }
 
 export function isProjectId(id: string): boolean {
@@ -16,7 +16,7 @@ export function isProjectId(id: string): boolean {
 }
 
 /** Lexically normalize an absolute path: resolve `.`/`..`, collapse `//`, and
- *  drop a trailing slash (except for the root itself). No disk access — the
+ *  drop a trailing slash (except for the root itself). No disk access; the
  *  canonical path the store records as the project's authority. */
 export function normalizeProjectPath(path: string): string {
   const normalized = normalize(path);
@@ -32,8 +32,8 @@ function escapeSegment(segment: string): string {
 
 /**
  * Encode an absolute path into a single, filesystem-safe directory name:
- * `/Volumes/External/Project` → `#Volumes#External#Project`. The encoding is
- * injective — distinct paths never collide on the same directory — because any
+ * `/Volumes/External/Project` -> `#Volumes#External#Project`. The encoding is
+ * injective; distinct paths never collide on the same directory because any
  * literal `#`/`%` inside a path segment is percent-escaped before the `#` join.
  * It is never reversed in code; the canonical path lives in `project.json`.
  */

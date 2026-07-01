@@ -107,7 +107,7 @@ export class ConversationLog {
 
   /** Append an event, enforcing size limits. Appends are serialized so each
    *  event's size check, file write, and in-memory push complete before the next
-   *  begins — concurrent posts to one conversation are a core path. An oversized
+   *  begins; concurrent posts to one conversation are a core path. An oversized
    *  single event is rejected (the caller surfaces a 400); exhausting the
    *  conversation total turns the conversation read-only. */
   async append(event: RoundtableEvent): Promise<AppendResult> {

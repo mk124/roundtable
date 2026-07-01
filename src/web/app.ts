@@ -159,7 +159,7 @@ export class App {
   }
 
   private onSseDrop(controller: AbortController): void {
-    if (controller.signal.aborted || this.sseAbort !== controller) return; // closed deliberately (switch/delete) — don't reconnect
+    if (controller.signal.aborted || this.sseAbort !== controller) return; // closed deliberately (switch/delete); do not reconnect
     this.sse = 'reconnecting';
     this.render();
     const id = this.conversationId;
@@ -244,7 +244,7 @@ export class App {
     void this.loadProjects();
   }
 
-  /* ── Rendering ── */
+  /* Rendering */
 
   private render(): void {
     if (this.conversationId && this.view && this.renderedConvId === this.conversationId) {
@@ -325,7 +325,7 @@ export class App {
 
   /** Render the sidebar: a top-level "+ Project" action, then one group per
    *  project with its conversations and an in-project "+ New conversation". With
-   *  no projects, only the add-project action and an empty-state hint show — there
+   *  no projects, only the add-project action and an empty-state hint show; there
    *  is no way to create a conversation before a project exists. */
   private fillSidebar(scroll: HTMLElement): void {
     const add = el(this.doc, 'button', 'nav-item nav-item--add', '+ Project') as HTMLButtonElement;
@@ -663,7 +663,7 @@ export class App {
     return this.conversationId === id && this.conversationEpoch === epoch;
   }
 
-  /* ── Actions ── */
+  /* Actions */
 
   private async onSend(textarea: HTMLTextAreaElement): Promise<void> {
     if (this.root.querySelector<HTMLTextAreaElement>('.composer__input') !== textarea) return;
@@ -715,7 +715,7 @@ export class App {
 
   private async addProject(): Promise<void> {
     const path = window.prompt('Project path (absolute):');
-    if (!path) return; // cancelled or empty — no-op
+    if (!path) return; // cancelled or empty; no-op
     const result = await this.api.addProject(path);
     if (result.ok) await this.loadProjects();
     else window.alert(result.error ?? 'Could not add that project.'); // surface the server's reason, leave the sidebar as-is
@@ -733,7 +733,7 @@ export class App {
     }
     this.collapsedProjects.delete(project.id); // drop dead collapse state (re-adding gets a fresh id)
     await this.loadProjects();
-    // If the open conversation belonged to the removed project it is gone now —
+    // If the open conversation belonged to the removed project it is gone now;
     // resolve against the reloaded list (not the click-time snapshot, which may
     // predate a conversation opened during the request) and detach if it vanished.
     if (this.conversationId !== null && !this.findConversation(this.conversationId)) {
@@ -797,7 +797,7 @@ function emptyState(doc: Document, title: string, body: string): HTMLElement {
   return box;
 }
 
-/** The last two segments of an absolute path (`/acme/src/web` → `src/web`), used
+/** The last two segments of an absolute path (`/acme/src/web` -> `src/web`), used
  *  to disambiguate projects that share a basename. */
 function lastTwoSegments(path: string): string {
   const parts = path.split('/').filter(Boolean);
@@ -845,7 +845,7 @@ function sameLocalDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
-/** "· Nm" once a presence has lasted at least a minute, else empty. */
+/** Presence elapsed label once it has lasted at least a minute, else empty. */
 function elapsedLabel(since: string): string {
   const ms = Date.now() - Date.parse(since);
   if (!Number.isFinite(ms) || ms < 60000) return '';

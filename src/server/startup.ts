@@ -13,7 +13,7 @@ import { SseHub, type SseClient } from './sse.ts';
 interface ConversationContext {
   log: ConversationLog;
   sse: SseHub;
-  /** The store this conversation belongs to — its project's ConversationStore. */
+  /** The store this conversation belongs to; its project's ConversationStore. */
   store: ConversationStore;
 }
 
@@ -31,12 +31,12 @@ interface ConversationContext {
 export class RoundtableService implements RoundtableApp {
   private readonly projects: ProjectStore;
   private readonly limits?: SizeLimits;
-  private readonly stores = new Map<string, ConversationStore>(); // projectId → store
-  private readonly convToProject = new Map<string, string>(); // conversationId → projectId
+  private readonly stores = new Map<string, ConversationStore>(); // projectId -> store
+  private readonly convToProject = new Map<string, string>(); // conversationId -> projectId
   private readonly contexts = new Map<string, ConversationContext>();
   private readonly opening = new Map<string, Promise<ConversationContext | null>>();
   private readonly mutations = new Map<string, Promise<void>>();
-  private readonly removing = new Set<string>(); // project ids mid-teardown — never (re)resolved
+  private readonly removing = new Set<string>(); // project ids mid-teardown; never (re)resolved
 
   /** `limits` overrides the per-conversation size caps; production uses the
    *  defaults, tests inject small caps to exercise the read-only path. */
@@ -66,7 +66,7 @@ export class RoundtableService implements RoundtableApp {
 
   /** Deregister a project (non-destructive): delete its `project.json` so cold
    *  resolution can no longer reach it, then tear down every conversation still
-   *  mapped to it — closing SSE, dropping contexts, and pruning the id map. The
+   *  mapped to it: closing SSE, dropping contexts, and pruning the id map. The
    *  transcript files are retained on disk; the ids simply stop resolving. */
   async removeProject(id: string) {
     const project = await this.projects.get(id);
@@ -78,8 +78,8 @@ export class RoundtableService implements RoundtableApp {
       await this.projects.remove(id);
       // The sidecar is gone, so resolveStore's cold scan can no longer reach this
       // project. Drain any in-flight first-access opens so the contexts they create
-      // become visible, then evict every conversation still mapped to it — including
-      // ones that warmed during the teardown — closing its SSE and dropping it.
+      // become visible, then evict every conversation still mapped to it, including
+      // ones that warmed during the teardown, closing its SSE and dropping it.
       await Promise.allSettled([...this.opening.values()]);
       for (const [convId, pid] of [...this.convToProject]) {
         if (pid !== id) continue;
@@ -182,7 +182,7 @@ export class RoundtableService implements RoundtableApp {
    *  Presence is in-memory, so an unopened conversation simply has none. This
    *  resolves directly rather than opening a context, keeping a frequent presence
    *  poll cheap; the trade-off is that a poll racing its project's removal may read
-   *  an empty snapshot for one cycle before the id stops resolving — never a stale
+   *  an empty snapshot for one cycle before the id stops resolving, never a stale
    *  message, since the message paths go through the coordinated teardown. */
   async getActivity(conversationId: string) {
     const store = await this.resolveStore(conversationId);
@@ -215,16 +215,16 @@ export class RoundtableService implements RoundtableApp {
   /** Resolve a conversation id to its owning project's store. Warm ids hit the
    *  in-memory map (O(1)); a cold miss scans registered projects once and caches
    *  the result. A deregistered project drops out of the scan, so its ids stop
-   *  resolving — invisible, but their files are retained on disk. */
+   *  resolving; invisible, but their files are retained on disk. */
   private async resolveStore(conversationId: string): Promise<ConversationStore | null> {
     const known = this.convToProject.get(conversationId);
     if (known) {
       const store = this.stores.get(known);
       if (store) return store;
-      this.convToProject.delete(conversationId); // project gone — fall back to a rescan
+      this.convToProject.delete(conversationId); // project gone; fall back to a rescan
     }
     for (const project of await this.projects.list()) {
-      if (this.removing.has(project.id)) continue; // mid-teardown — don't re-create its store
+      if (this.removing.has(project.id)) continue; // mid-teardown; do not re-create its store
       const store = this.storeFor(project);
       if (await store.get(conversationId)) {
         this.convToProject.set(conversationId, project.id);
@@ -272,14 +272,14 @@ export class RoundtableService implements RoundtableApp {
   }
 }
 
-// ── Startup sequence ────────────────────────────────────────────────────
+// Startup sequence
 
 async function ensureRoots(home: string): Promise<void> {
   // recursive creates ~/.roundtable too; both land at 0o700 when newly made.
   await mkdir(join(home, 'projects'), { recursive: true, mode: 0o700 });
 }
 
-/** Tighten storage directories to user-private; fail closed if they cannot be secured. */
+/** Tighten storage directories to user-private; throw if they cannot be secured. */
 async function verifyPermissions(home: string): Promise<void> {
   await securePrivateDir(home, '~/.roundtable');
   await securePrivateDir(join(home, 'projects'), '~/.roundtable/projects');

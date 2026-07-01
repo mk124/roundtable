@@ -15,7 +15,7 @@ const readMetadata = (path: string) => readJsonSidecar(path, isConversationMetad
 
 /**
  * Manages conversation sidecar metadata under `~/.roundtable/conversations/`.
- * The conversationId, title, filename, and timestamps live here — never in the
+ * The conversationId, title, filename, and timestamps live here; never in the
  * human-readable Markdown event log. The Markdown file itself is owned by
  * ConversationLog.
  */

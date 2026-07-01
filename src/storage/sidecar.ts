@@ -1,6 +1,6 @@
 import { chmod, readFile, writeFile } from 'node:fs/promises';
 
-/** True for any non-null object — the precondition every sidecar type guard shares. */
+/** True for any non-null object; the precondition every sidecar type guard shares. */
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }

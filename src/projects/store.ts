@@ -10,7 +10,7 @@ const readMetadata = (path: string) => readJsonSidecar(path, isProjectMetadata);
 
 /**
  * Manages project registrations under `~/.roundtable/projects/`. Each project is
- * a `<encoded-path>/` directory holding a `project.json` sidecar — the authority
+ * a `<encoded-path>/` directory holding a `project.json` sidecar; the authority
  * for its id, canonical absolute path, and title. Conversations live in the
  * project's own `conversations/` subtree, owned by a ConversationStore the service
  * builds from `projectDir(meta)`.
@@ -69,7 +69,7 @@ export class ProjectStore {
     return true;
   }
 
-  /** A project's storage root `~/.roundtable/projects/<encoded>` — the directory a
+  /** A project's storage root `~/.roundtable/projects/<encoded>`; the directory a
    *  ConversationStore is built over (it owns the `conversations/` subdirectory). */
   projectDir(meta: ProjectMetadata): string {
     return join(this.dir, encodeProjectDir(meta.path));

@@ -1,11 +1,11 @@
 /**
- * Shared domain types for roundtable — a passive chat room.
+ * Shared domain types for roundtable: a passive chat room.
  *
  * Type-only by design: the only runtime config lives in `src/config/limits.ts`,
  * so every layer can `import type` from here without a runtime dependency cycle.
  */
 
-/* ── Events ──────────────────────────────────────────────────────────── */
+/* Events */
 
 /** Event kinds persisted in the Markdown log. */
 export type EventType = 'message' | 'system';
@@ -20,7 +20,8 @@ export interface EventMetadata {
 
 /**
  * A chat message. `author` is a free-form display name self-reported by the
- * sender — `user` for the human, or a model name like `Claude Opus 4.8`.
+ * sender: `user` for the human, a model like `Claude Opus 4.8`, or an assigned
+ * room name plus model label such as `Claude-a1b2 · Claude Opus 4.8`.
  */
 export interface MessageEvent extends EventMetadata {
   type: 'message';
@@ -45,7 +46,7 @@ export interface SystemEventPayload {
   kind: 'quarantine-fence';
 }
 
-/* ── Storage records ─────────────────────────────────────────────────── */
+/* Storage records */
 
 /**
  * Conversation metadata (sidecar). The `id` is never written into the
@@ -65,7 +66,7 @@ export interface ConversationMetadata {
 /**
  * Project registration record (sidecar `project.json`). `id` is the public,
  * URL-safe handle used in `/api/projects/:id`; `path` is the canonical absolute
- * filesystem path and the sole authority — the encoded directory name is never
+ * filesystem path and the sole authority; the encoded directory name is never
  * the public id.
  */
 export interface ProjectMetadata {
@@ -76,12 +77,12 @@ export interface ProjectMetadata {
   addedAt: string;
 }
 
-/* ── Size-limit outcomes ─────────────────────────────────────────────── */
+/* Size-limit outcomes */
 
 export type SizeLimitOutcome =
   | 'ok'
-  | 'rejected' //                message over the single-message limit → not written
-  | 'conversation-readonly'; //  conversation total reached → marked read-only
+  | 'rejected' //                message over the single-message limit; not written
+  | 'conversation-readonly'; //  conversation total reached; marked read-only
 
 /**
  * Byte budgets for stored content. Every count is UTF-8 bytes of the
