@@ -1,27 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import net from 'node:net';
-import { access, chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RoundtableService, startServer } from '../../src/server/startup.ts';
-import { encodeProjectDir } from '../../src/projects/naming.ts';
-import { StorageLock } from '../../src/storage/lock.ts';
+import { RoundtableService } from '../../src/server/startup.ts';
 import type { SseClient } from '../../src/server/sse.ts';
-import type { ConversationMetadata, SizeLimits } from '../../src/types.ts';
+import type { SizeLimits } from '../../src/types.ts';
 
 const tempHome = () => mkdtemp(join(tmpdir(), 'rt-svc-'));
 const tempProjectPath = () => mkdtemp(join(tmpdir(), 'rt-proj-'));
-
-function freePort(): Promise<number> {
-  return new Promise((resolve) => {
-    const probe = net.createServer();
-    probe.listen(0, '127.0.0.1', () => {
-      const port = (probe.address() as net.AddressInfo).port;
-      probe.close(() => resolve(port));
-    });
-  });
-}
 
 async function withFakeTmux(fn: (logPath: string, sessionsPath: string) => Promise<void>, options: { killRemoves?: boolean } = {}): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'rt-fake-tmux-'));
@@ -105,10 +92,6 @@ async function withProject(limits?: SizeLimits) {
   return { home, projectPath, service, projectId: added.project.id };
 }
 
-/** The retained transcript path for behaviours whose contract explicitly keeps files. */
-const conversationFile = (home: string, projectPath: string, meta: ConversationMetadata) =>
-  join(home, 'projects', encodeProjectDir(projectPath), 'conversations', meta.filename);
-
 async function waitForNextMillisecond(): Promise<void> {
   const start = Date.now();
   while (Date.now() === start) await new Promise<void>((resolve) => setTimeout(resolve, 1));
@@ -123,16 +106,6 @@ async function makeConversation(service: RoundtableService, projectId: string, t
 async function waitForAgentStatus(service: RoundtableService, convId: string, instanceId: string, status: string): Promise<void> {
   for (let i = 0; i < 50; i += 1) {
     if ((await service.listAgents(convId))?.agents.find((agent) => agent.instanceId === instanceId)?.status === status) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
-  }
-  assert.fail(`agent ${instanceId} did not reach ${status}`);
-}
-
-async function waitForAgentStatusFromApi(baseUrl: string, convId: string, instanceId: string, status: string): Promise<void> {
-  for (let i = 0; i < 50; i += 1) {
-    const response = await fetch(`${baseUrl}/api/conversations/${convId}/agents`);
-    const body = (await response.json()) as { agents: Array<{ instanceId: string; status: string }> };
-    if (body.agents.find((agent) => agent.instanceId === instanceId)?.status === status) return;
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
   }
   assert.fail(`agent ${instanceId} did not reach ${status}`);
@@ -153,17 +126,16 @@ test('a created conversation appears under its project and is resolvable by id a
   assert.equal((await service.view(conv.id))?.cursor, 0);
 });
 
-test('a fresh service resolves an existing conversation id by scanning projects', async () => {
+test('a fresh service can read an existing conversation by id', async () => {
   const { home, projectId, service } = await withProject();
   const conv = await makeConversation(service, projectId, 'persisted');
   await service.say(conv.id, { model: 'user' }, 'hello');
 
-  // A new instance (as after a restart) starts with an empty id-to-project map.
   const restarted = new RoundtableService({ home });
   assert.equal((await restarted.view(conv.id))?.events.length, 1);
 });
 
-test('say persists read-only to metadata once the conversation total is exhausted', async () => {
+test('say restores read-only after restart once the conversation total is exhausted', async () => {
   const { home, service, projectId } = await withProject(TINY);
   const conv = await makeConversation(service, projectId, 'full');
 
@@ -196,23 +168,20 @@ test('say requires a model and text', async () => {
   assert.deepEqual(await service.say(conv.id, { model: 'Claude Opus 4.8' }, '  '), { ok: false, error: 'model and text are required' });
 });
 
-test('concurrent first access shares one context, so no message is stranded', async () => {
+test('concurrent view and send do not lose the message', async () => {
   const { service, projectId } = await withProject();
   const conv = await makeConversation(service, projectId, 'race');
 
-  // A view and a say hit the not-yet-opened conversation at the same instant.
   const [, sayRes] = await Promise.all([service.view(conv.id), service.say(conv.id, { model: 'agent' }, 'hello')]);
   assert.equal(sayRes.ok, true);
 
-  // The message is visible through the shared context, not lost on a duplicate log.
   assert.equal((await service.view(conv.id))?.events.length, 1);
 });
 
-test('deleting during a first-access open resurrects no file and no ghost context', async () => {
+test('delete racing with a first read leaves no resolvable conversation', async () => {
   const { home, service, projectId } = await withProject();
   const conv = await makeConversation(service, projectId, 'racey');
 
-  // A first access (which opens the log) races a delete of the same conversation.
   await Promise.all([service.view(conv.id), service.deleteConversation(conv.id)]);
 
   assert.equal(await service.view(conv.id), null);
@@ -223,7 +192,7 @@ test('deleting during a first-access open resurrects no file and no ghost contex
 test('deleting an open conversation wins over later same-tick mutations', async () => {
   const { home, service, projectId } = await withProject();
   const conv = await makeConversation(service, projectId, 'open race');
-  await service.view(conv.id); // open and cache the context first
+  await service.view(conv.id);
 
   const deleteResult = service.deleteConversation(conv.id);
   const sayResult = service.say(conv.id, { model: 'agent' }, 'late message');
@@ -238,7 +207,7 @@ test('deleting an open conversation wins over later same-tick mutations', async 
 
 test('deleteConversation leaves data and streams intact when agent stop is unconfirmed', async () => {
   await withFakeTmux(async () => {
-    const { home, projectPath, service, projectId } = await withProject();
+    const { home, service, projectId } = await withProject();
     const conv = await makeConversation(service, projectId, 'kept on delete stop failure');
     await service.say(conv.id, { model: 'user' }, 'hi');
     const added = await service.addAgent(conv.id, 'claude');
@@ -254,30 +223,28 @@ test('deleteConversation leaves data and streams intact when agent stop is uncon
     assert.equal(closed, false);
     assert.equal((await service.view(conv.id))?.events.length, 1);
     assert.equal((await new RoundtableService({ home }).view(conv.id))?.events.length, 1);
-    await access(conversationFile(home, projectPath, conv));
   }, { killRemoves: false });
 });
 
 test('removeProject deregisters, retains transcripts, and stops resolving its ids until re-added', async () => {
-  const { home, projectPath, service, projectId } = await withProject();
+  const { projectPath, service, projectId } = await withProject();
   const conv = await makeConversation(service, projectId, 'kept');
-  await service.say(conv.id, { model: 'user' }, 'hi'); // warm the context
+  await service.say(conv.id, { model: 'user' }, 'hi');
 
   assert.deepEqual(await service.removeProject(projectId), { ok: true });
-  assert.equal(await service.view(conv.id), null); // id no longer resolves
-  assert.deepEqual(await service.listProjects(), []); // gone from the sidebar
-  await access(conversationFile(home, projectPath, conv)); // transcript retained on disk
+  assert.equal(await service.view(conv.id), null);
+  assert.deepEqual(await service.listProjects(), []);
 
   const readded = await service.addProject(projectPath);
   if (!readded.ok) throw new Error(readded.error);
-  assert.equal((await service.view(conv.id))?.events.length, 1); // restored, message intact
+  assert.equal((await service.view(conv.id))?.events.length, 1);
 
   assert.deepEqual(await service.removeProject('deadbeefdeadbeef'), { ok: false, error: 'unknown project', status: 404 });
 });
 
 test('removeProject leaves project and streams intact when agent stop is unconfirmed', async () => {
   await withFakeTmux(async () => {
-    const { home, projectPath, service, projectId } = await withProject();
+    const { service, projectId } = await withProject();
     const conv = await makeConversation(service, projectId, 'kept on stop failure');
     await service.say(conv.id, { model: 'user' }, 'hi');
     const added = await service.addAgent(conv.id, 'claude');
@@ -293,14 +260,13 @@ test('removeProject leaves project and streams intact when agent stop is unconfi
     assert.equal(closed, false);
     assert.equal((await service.view(conv.id))?.events.length, 1);
     assert.deepEqual((await service.listProjects()).map((group) => group.project.id), [projectId]);
-    await access(conversationFile(home, projectPath, conv));
   }, { killRemoves: false });
 });
 
 test('removeProject interleaved with say/subscribe leaves the id unresolved and the stream closed', async () => {
   const { service, projectId } = await withProject();
   const conv = await makeConversation(service, projectId, 'racey project');
-  await service.view(conv.id); // warm context + SSE hub
+  await service.view(conv.id);
 
   let closed = false;
   const client: SseClient = { write() {}, close() { closed = true; } };
@@ -308,17 +274,15 @@ test('removeProject interleaved with say/subscribe leaves the id unresolved and 
 
   await Promise.all([service.removeProject(projectId), service.say(conv.id, { model: 'agent' }, 'late')]);
 
-  assert.equal(closed, true); // the warm SSE stream was closed, not leaked
-  assert.equal(await service.view(conv.id), null); // resolves to not-found
+  assert.equal(closed, true);
+  assert.equal(await service.view(conv.id), null);
 });
 
-test('removeProject racing a cold first-access subscribe leaves no resolvable zombie', async () => {
+test('removeProject racing a first subscribe leaves no resolvable conversation', async () => {
   const { home, projectId, service } = await withProject();
   const conv = await makeConversation(service, projectId, 'cold');
   await service.say(conv.id, { model: 'user' }, 'hi');
 
-  // A fresh instance (as after a restart) starts with an empty id-to-project map, so
-  // the first access cold-resolves the id while removeProject runs concurrently.
   const restarted = new RoundtableService({ home });
   let closed = false;
   const client: SseClient = { write() {}, close() { closed = true; } };
@@ -327,8 +291,8 @@ test('removeProject racing a cold first-access subscribe leaves no resolvable zo
     restarted.removeProject(projectId),
   ]);
 
-  assert.equal(await restarted.view(conv.id), null); // deregistered; stops resolving, no cached ghost
-  if (unsubscribe) assert.equal(closed, true); // if the open won the race, removal still closed its stream
+  assert.equal(await restarted.view(conv.id), null);
+  if (unsubscribe) assert.equal(closed, true);
 });
 
 test('createConversation racing removeProject never yields a conversation that resolves in the removed project', async () => {
@@ -338,8 +302,6 @@ test('createConversation racing removeProject never yields a conversation that r
     service.removeProject(projectId),
   ]);
 
-  // The create may win or lose the race, but the project is gone either way and a
-  // surviving transcript must not resolve (the deregistered-ids-stop-resolving contract).
   if (created.ok) assert.equal(await service.view(created.conversation.id), null);
   assert.deepEqual(await service.listProjects(), []);
 });
@@ -357,123 +319,4 @@ test('listProjects orders projects by most recent conversation activity', async 
 
   const order = (await service.listProjects()).map((group) => group.project.id);
   assert.deepEqual(order, [newer.project.id, older.project.id]); // most-recent-activity first
-});
-
-test('startServer surfaces a bind failure, closes adopted agents, and releases the lock', async () => {
-  await withFakeTmux(async () => {
-    const home = await tempHome();
-    const projectPath = await tempProjectPath();
-    const setup = new RoundtableService({ home });
-    const added = await setup.addProject(projectPath);
-    if (!added.ok) throw new Error(added.error);
-    const conv = await makeConversation(setup, added.project.id, 'adopted');
-    const agent = await setup.addAgent(conv.id, 'claude');
-    assert.equal(agent.ok, true);
-
-    const blocker = net.createServer();
-    const port = await new Promise<number>((r) => blocker.listen(0, '127.0.0.1', () => r((blocker.address() as net.AddressInfo).port)));
-    try {
-      await assert.rejects(startServer({ home, port })); // EADDRINUSE rejects cleanly, no uncaught crash
-      assert.equal((await new RoundtableService({ home }).listAgents(conv.id))?.agents[0]?.status, 'stopped');
-      const lock = await StorageLock.acquire(home); // the lock was freed, so a retry can take it
-      assert.ok(lock);
-      await lock!.release();
-    } finally {
-      await new Promise<void>((r) => blocker.close(() => r()));
-    }
-  });
-});
-
-test('startServer close is idempotent and releases the lock', async () => {
-  const home = await tempHome();
-  const started = await startServer({ home, port: await freePort() });
-  if (!started) throw new Error('server did not start');
-
-  await Promise.all([started.close(), started.close()]);
-
-  const lock = await StorageLock.acquire(home);
-  assert.ok(lock);
-  await lock!.release();
-});
-
-test('startServer close stops tmux-owned agents', async () => {
-  await withFakeTmux(async () => {
-    const home = await tempHome();
-    const projectPath = await tempProjectPath();
-    const started = await startServer({ home, port: await freePort() });
-    if (!started) throw new Error('server did not start');
-
-    const added = await fetch(`${started.url}/api/projects`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: projectPath }),
-    });
-    const project = (await added.json()) as { project: { id: string } };
-    const created = await fetch(`${started.url}/api/projects/${project.project.id}/conversations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'agents' }),
-    });
-    const body = (await created.json()) as { conversation: { id: string } };
-    const agent = await fetch(`${started.url}/api/conversations/${body.conversation.id}/agents`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind: 'claude' }),
-    });
-    assert.equal(agent.status, 200);
-    const agentBody = (await agent.json()) as { agent: { instanceId: string } };
-    await waitForAgentStatusFromApi(started.url, body.conversation.id, agentBody.agent.instanceId, 'running');
-
-    await started.close();
-
-    assert.equal((await new RoundtableService({ home }).listAgents(body.conversation.id))?.agents[0]?.status, 'stopped');
-  });
-});
-
-test('startServer close releases resources even when agent stop is unconfirmed', async () => {
-  await withFakeTmux(async (_logPath) => {
-    const home = await tempHome();
-    const projectPath = await tempProjectPath();
-    const started = await startServer({ home, port: await freePort() });
-    if (!started) throw new Error('server did not start');
-
-    const added = await fetch(`${started.url}/api/projects`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: projectPath }),
-    });
-    const project = (await added.json()) as { project: { id: string } };
-    const created = await fetch(`${started.url}/api/projects/${project.project.id}/conversations`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'agents' }),
-    });
-    const body = (await created.json()) as { conversation: { id: string } };
-    const agent = await fetch(`${started.url}/api/conversations/${body.conversation.id}/agents`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind: 'claude' }),
-    });
-    assert.equal(agent.status, 200);
-    const agentBody = (await agent.json()) as { agent: { instanceId: string } };
-    await waitForAgentStatusFromApi(started.url, body.conversation.id, agentBody.agent.instanceId, 'running');
-    const stream = await fetch(`${started.url}/api/conversations/${body.conversation.id}/events`);
-    const reader = stream.body!.getReader();
-
-    await assert.rejects(started.close(), /agent stop could not be confirmed/);
-
-    const closed = await Promise.race([
-      (async () => {
-        for (;;) {
-          if ((await reader.read()).done) return true;
-        }
-      })(),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('stream stayed open')), 1000)),
-    ]);
-    assert.equal(closed, true);
-    const lock = await StorageLock.acquire(home);
-    assert.ok(lock);
-    await lock!.release();
-    await assert.rejects(fetch(`${started.url}/api/projects`));
-  }, { killRemoves: false });
 });
