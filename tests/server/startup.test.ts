@@ -126,6 +126,53 @@ test('a created conversation appears under its project and is resolvable by id a
   assert.equal((await service.view(conv.id))?.cursor, 0);
 });
 
+test('listProjects exposes an active agent kind after launch', async () => {
+  await withFakeTmux(async () => {
+    const { service, projectId } = await withProject();
+    const conv = await makeConversation(service, projectId, 'agents');
+    const result = await service.addAgent(conv.id, 'claude');
+    assert.equal(result.ok, true);
+    if (result.ok) await waitForAgentStatus(service, conv.id, result.agent.instanceId, 'running');
+
+    const listed = (await service.listProjects()).flatMap((group) => group.conversations).find((c) => c.id === conv.id);
+    assert.deepEqual(listed?.activeAgentKinds, ['claude']);
+  });
+});
+
+test('listProjects clears an active agent kind when its tmux session is gone', async () => {
+  await withFakeTmux(async (_log, sessions) => {
+    const { service, projectId } = await withProject();
+    const conv = await makeConversation(service, projectId, 'lost session');
+    const added = await service.addAgent(conv.id, 'claude');
+    assert.equal(added.ok, true);
+    if (!added.ok) return;
+    await waitForAgentStatus(service, conv.id, added.agent.instanceId, 'running');
+    assert.deepEqual((await service.listProjects()).flatMap((group) => group.conversations).find((c) => c.id === conv.id)?.activeAgentKinds, ['claude']);
+
+    await writeFile(sessions, '');
+
+    const listed = (await service.listProjects()).flatMap((group) => group.conversations).find((c) => c.id === conv.id);
+    assert.deepEqual(listed?.activeAgentKinds, []);
+  });
+});
+
+test('agent lifecycle changes notify project list subscribers', async () => {
+  await withFakeTmux(async () => {
+    const { service, projectId } = await withProject();
+    const conv = await makeConversation(service, projectId, 'project events');
+    const frames: string[] = [];
+    const unsubscribe = await service.subscribeProjects({ write: (chunk) => frames.push(chunk) });
+    assert.equal(frames.some((frame) => frame.includes('event: projects')), true);
+    frames.length = 0;
+
+    const added = await service.addAgent(conv.id, 'claude');
+    assert.equal(added.ok, true);
+    if (added.ok) await waitForAgentStatus(service, conv.id, added.agent.instanceId, 'running');
+    unsubscribe();
+    assert.equal(frames.some((frame) => frame.includes('event: projects')), true);
+  });
+});
+
 test('a fresh service can read an existing conversation by id', async () => {
   const { home, projectId, service } = await withProject();
   const conv = await makeConversation(service, projectId, 'persisted');

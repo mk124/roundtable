@@ -68,6 +68,9 @@ function fakeApp(over: Partial<RoundtableApp> = {}): RoundtableApp {
     async getActivity(id) {
       return id === 'c1' ? [{ author: 'Claude Opus 4.8', state: 'thinking', since: 't' }] : null;
     },
+    async subscribeProjects() {
+      return () => {};
+    },
     async subscribe(id, client) {
       if (id !== 'c1') return null;
       queueMicrotask(() => client.write('id: 1\nevent: message\ndata: {"cursor":1}\n\n'));

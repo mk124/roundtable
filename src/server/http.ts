@@ -24,10 +24,15 @@ export interface SayIdentity {
   name?: string;
 }
 
+/** A conversation row in the sidebar: its metadata plus the agent kinds currently active in it. */
+export interface ConversationSidebarSummary extends ConversationMetadata {
+  activeAgentKinds?: AgentKind[];
+}
+
 /** A project with its conversations embedded; one sidebar group. */
 export interface ProjectWithConversations {
   project: ProjectMetadata;
-  conversations: ConversationMetadata[];
+  conversations: ConversationSidebarSummary[];
 }
 
 /** Business surface the HTTP layer drives. startup.ts assembles the real
@@ -45,6 +50,7 @@ export interface RoundtableApp {
   say(conversationId: string, identity: SayIdentity, text: string): Promise<{ ok: true; cursor: number } | { ok: false; error: string }>;
   setActivity(conversationId: string, author: string, state: string | null): Promise<{ ok: true } | { ok: false; error: string }>;
   getActivity(conversationId: string): Promise<ActivityEntry[] | null>;
+  subscribeProjects(client: SseClient): Promise<() => void>;
   subscribe(conversationId: string, client: SseClient, lastEventId: number): Promise<(() => void) | null>;
   listAgents(conversationId: string): Promise<{ tmuxAvailable: boolean; agents: AgentDto[] } | null>;
   addAgent(conversationId: string, kind: AgentKind): Promise<{ ok: true; agent: AgentDto } | { ok: false; error: string; status: 400 | 404 | 429 | 503 }>;
@@ -119,6 +125,9 @@ export function createServer(deps: ServerDeps): http.Server {
     }
 
     if (resource === 'projects') {
+      if (id === 'events' && !action && req.method === 'GET') {
+        return openSubscribedSse(req, res, (client) => deps.app.subscribeProjects(client));
+      }
       if (!id) {
         if (req.method === 'GET') {
           const projects = await deps.app.listProjects();
@@ -206,6 +215,10 @@ export function createServer(deps: ServerDeps): http.Server {
 
   async function openSse(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
     const lastEventId = Number(header(req, 'last-event-id')) || 0;
+    return openSubscribedSse(req, res, (client) => deps.app.subscribe(id, client, lastEventId));
+  }
+
+  async function openSubscribedSse(req: http.IncomingMessage, res: http.ServerResponse, subscribe: (client: SseClient) => Promise<(() => void) | null>): Promise<void> {
     const queued: string[] = [];
     let open = false;
     let closed = false;
@@ -231,7 +244,7 @@ export function createServer(deps: ServerDeps): http.Server {
         }
       },
     };
-    const subscribed = await deps.app.subscribe(id, client, lastEventId);
+    const subscribed = await subscribe(client);
     if (!subscribed) {
       req.off('close', onClose);
       if (closed) return;
@@ -282,8 +295,15 @@ export function createServer(deps: ServerDeps): http.Server {
 
 // DTO serialization (display-safe)
 
-function conversationSummary(meta: ConversationMetadata) {
-  return { id: meta.id, title: meta.title, createdAt: meta.createdAt, lastActivityAt: meta.lastActivityAt, readOnly: meta.readOnly ?? false };
+function conversationSummary(meta: ConversationSidebarSummary) {
+  return {
+    id: meta.id,
+    title: meta.title,
+    createdAt: meta.createdAt,
+    lastActivityAt: meta.lastActivityAt,
+    readOnly: meta.readOnly ?? false,
+    activeAgentKinds: meta.activeAgentKinds ?? [],
+  };
 }
 
 /** The project's own fields. `path` carries the full absolute path so the sidebar

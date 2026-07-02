@@ -1,6 +1,6 @@
-import { ConversationApi, RECONNECT_DELAY_MS, streamEvents } from './client.ts';
+import { ConversationApi, RECONNECT_DELAY_MS, streamEvents, streamProjectEvents } from './client.ts';
 import type { ActivityEntry, AgentDto, AgentKind, ConversationDTO, EventDTO, ProjectDTO, ViewDTO } from './client.ts';
-import { fillAgentRoster, renderAgentBar, syncAgentAddButton, TMUX_REQUIRED, type AgentBarActions, type AgentBarState } from './agent-bar.ts';
+import { AGENT_KIND_META, fillAgentRoster, renderAgentBar, syncAgentAddButton, TMUX_REQUIRED, type AgentBarActions, type AgentBarState } from './agent-bar.ts';
 import { renderContent } from './render-content.ts';
 import { agentAccent, composerState, el } from './ui-state.ts';
 
@@ -33,6 +33,7 @@ export class App {
   private activityTimer: number | null = null;
   private sse: 'connected' | 'reconnecting' | 'disconnected' = 'disconnected';
   private sseAbort: AbortController | null = null;
+  private projectSseAbort: AbortController | null = null;
   private conversationEpoch = 0;
   private refreshSeq = 0;
   private appliedRefreshSeq = 0;
@@ -56,6 +57,7 @@ export class App {
 
   async start(): Promise<void> {
     await this.loadProjects();
+    this.connectProjectEvents();
     const first = this.firstConversation();
     if (first) await this.openConversation(first.id); // open straight into the first conversation, not an empty pane
   }
@@ -171,6 +173,25 @@ export class App {
       },
       onDrop: () => this.onSseDrop(controller),
     });
+  }
+
+  private connectProjectEvents(): void {
+    this.projectSseAbort?.abort();
+    const controller = new AbortController();
+    this.projectSseAbort = controller;
+    void streamProjectEvents(controller.signal, {
+      onProjects: () => {
+        if (!controller.signal.aborted && this.projectSseAbort === controller) void this.loadProjects();
+      },
+      onDrop: () => this.onProjectSseDrop(controller),
+    });
+  }
+
+  private onProjectSseDrop(controller: AbortController): void {
+    if (controller.signal.aborted || this.projectSseAbort !== controller) return;
+    window.setTimeout(() => {
+      if (!controller.signal.aborted && this.projectSseAbort === controller) this.connectProjectEvents();
+    }, RECONNECT_DELAY_MS);
   }
 
   private onSseDrop(controller: AbortController): void {
@@ -405,7 +426,10 @@ export class App {
 
   private renderConversationRow(conv: ConversationDTO): HTMLElement {
     const row = el(this.doc, 'div', 'nav-row');
-    const item = el(this.doc, 'button', 'nav-item', conv.title) as HTMLButtonElement;
+    const item = el(this.doc, 'button', 'nav-item') as HTMLButtonElement;
+    item.appendChild(el(this.doc, 'span', 'nav-item__title', conv.title));
+    const agentDots = this.renderSidebarAgentDots(conv.activeAgentKinds ?? []);
+    if (agentDots) item.appendChild(agentDots);
     item.setAttribute('aria-current', String(conv.id === this.conversationId));
     item.setAttribute('data-sidebar-action', 'open');
     item.setAttribute('data-conversation-id', conv.id);
@@ -427,6 +451,20 @@ export class App {
     del.onclick = () => void this.deleteConversation(conv);
     row.append(item, rename, del);
     return row;
+  }
+
+  private renderSidebarAgentDots(kinds: AgentKind[]): HTMLElement | null {
+    if (kinds.length === 0) return null;
+    const group = el(this.doc, 'span', 'sidebar-agent-dots');
+    const label = `Active agents: ${kinds.map((kind) => AGENT_KIND_META[kind].label).join(', ')}`;
+    group.title = label;
+    group.setAttribute('aria-label', label);
+    for (const kind of kinds) {
+      const dot = el(this.doc, 'span', `sidebar-agent-dot accent-${AGENT_KIND_META[kind].accent}`);
+      dot.setAttribute('aria-hidden', 'true');
+      group.appendChild(dot);
+    }
+    return group;
   }
 
   /** Display label per project: the basename, or the last two path segments when

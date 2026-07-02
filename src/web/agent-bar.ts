@@ -2,12 +2,12 @@ import type { AgentDto, AgentKind } from './client.ts';
 import type { AgentAccent } from './ui-state.ts';
 import { el } from './ui-state.ts';
 
-const KINDS: Record<AgentKind, { label: string; accent: AgentAccent }> = {
+export const AGENT_KIND_META: Record<AgentKind, { label: string; accent: AgentAccent }> = {
   claude: { label: 'Claude Code', accent: 'claude' },
   codex: { label: 'Codex', accent: 'gpt' },
   antigravity: { label: 'Antigravity', accent: 'gemini' },
 };
-const KIND_ORDER = Object.keys(KINDS) as AgentKind[];
+const KIND_ORDER = Object.keys(AGENT_KIND_META) as AgentKind[];
 const STATUS_TEXT: Record<AgentDto['status'], string> = {
   starting: 'starting...',
   running: 'running',
@@ -65,7 +65,7 @@ export function fillAgentRoster(doc: Document, host: HTMLElement, state: AgentBa
   const { agents, conversationId, tmuxAvailable } = state;
   host.textContent = '';
   for (const agent of agents) {
-    const row = el(doc, 'div', `agent agent--${agent.status} accent-${KINDS[agent.kind].accent}`);
+    const row = el(doc, 'div', `agent agent--${agent.status} accent-${AGENT_KIND_META[agent.kind].accent}`);
     row.appendChild(el(doc, 'span', 'agent__dot'));
     row.appendChild(el(doc, 'span', 'agent__label', agent.name));
     row.appendChild(el(doc, 'span', 'agent__status', STATUS_TEXT[agent.status]));
@@ -100,7 +100,7 @@ function renderAgentMenu(doc: Document, state: AgentBarState, actions: AgentBarA
   menu.setAttribute('role', 'menu');
   menu.setAttribute('aria-label', 'Agent type');
   for (const kind of KIND_ORDER) {
-    const { accent, label } = KINDS[kind];
+    const { accent, label } = AGENT_KIND_META[kind];
     const item = el(doc, 'button', `menu__item accent-${accent}`, label) as HTMLButtonElement;
     item.type = 'button';
     item.setAttribute('role', 'menuitem');

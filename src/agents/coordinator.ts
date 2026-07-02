@@ -72,8 +72,23 @@ export class AgentCoordinator {
   }
 
   async list(convId: string, tmuxAvailable?: boolean): Promise<AgentDto[] | null> {
-    const records = await this.syncWithLive(convId, tmuxAvailable);
+    const available = tmuxAvailable ?? (await this.d.supervisor.available());
+    const sessions = available ? await this.d.supervisor.liveSessions(convId) : null;
+    const records = await this.syncWithLive(convId, sessions && (liveByConversation(sessions).get(convId) ?? new Set()));
     return records?.map(toDto) ?? null;
+  }
+
+  /** List many conversations against a single tmux snapshot, so a sidebar listing
+   *  costs one list-sessions query instead of one subprocess per conversation.
+   *  An id that no longer resolves yields no agents. */
+  async listMany(convIds: string[]): Promise<Map<string, AgentDto[]>> {
+    const sessions = (await this.d.supervisor.available()) ? await this.d.supervisor.liveSessions() : null;
+    const live = sessions && liveByConversation(sessions);
+    const entries = await Promise.all(convIds.map(async (convId) => {
+      const records = await this.syncWithLive(convId, live && (live.get(convId) ?? new Set()));
+      return [convId, records?.map(toDto) ?? []] as const;
+    }));
+    return new Map(entries);
   }
 
   /** Add a new agent: persist `starting`, then launch and finalize in the background. */
@@ -247,11 +262,7 @@ export class AgentCoordinator {
     if (!available) return;
     const liveSessions = await this.d.supervisor.liveSessions();
     if (liveSessions === null) return;
-    const liveByConv = new Map<string, Set<string>>();
-    for (const name of liveSessions) {
-      const parsed = parseAgentSessionName(name);
-      if (parsed) (liveByConv.get(parsed.convId) ?? liveByConv.set(parsed.convId, new Set()).get(parsed.convId)!).add(parsed.instanceId);
-    }
+    const liveByConv = liveByConversation(liveSessions);
     const reconciled = await Promise.all(convIds.map(async (convId) => {
       const store = await this.d.storeFor(convId);
       if (!store) return { convId, unreadable: false, known: [] as string[] };
@@ -462,17 +473,16 @@ export class AgentCoordinator {
     return { records: next, stopped: stopped.size > 0 };
   }
 
-  private async syncWithLive(convId: string, tmuxAvailable?: boolean): Promise<AgentRecord[] | null> {
-    const readCurrent = () =>
-      this.d.lock(convId, async () => {
+  /** Reconcile one conversation's records against `live` (its live instance ids)
+   *  under the conversation lock; a null `live` means tmux could not answer, so
+   *  the records are returned as stored. */
+  private async syncWithLive(convId: string, live: ReadonlySet<string> | null): Promise<AgentRecord[] | null> {
+    if (live === null) {
+      return this.d.lock(convId, async () => {
         const current = await this.d.storeFor(convId);
         return current ? current.readAgents(convId) : null;
       });
-    const available = tmuxAvailable ?? (await this.d.supervisor.available());
-    if (!available) return readCurrent();
-    const liveSessions = await this.d.supervisor.liveSessions(convId);
-    if (liveSessions === null) return readCurrent();
-    const live = new Set(liveSessions.map((name) => parseAgentSessionName(name)?.instanceId).filter((id): id is string => Boolean(id)));
+    }
     return this.d.lock(convId, async () => {
       const current = await this.d.storeFor(convId);
       if (!current) return null;
@@ -518,7 +528,20 @@ function startingRecord(rec: AgentRecord, sessionId: string | undefined): AgentR
 
 const key = (convId: string, instanceId: string) => `${convId}/${instanceId}`;
 
-function reconcileRecords(records: AgentRecord[], live: Set<string>, isInFlight: (instanceId: string) => boolean): { records: AgentRecord[]; changed: boolean; stopIds: AgentRecord[] } {
+/** Group live agent session names into instance-id sets keyed by conversation. */
+function liveByConversation(sessions: string[]): Map<string, Set<string>> {
+  const byConv = new Map<string, Set<string>>();
+  for (const name of sessions) {
+    const parsed = parseAgentSessionName(name);
+    if (!parsed) continue;
+    const set = byConv.get(parsed.convId) ?? new Set<string>();
+    set.add(parsed.instanceId);
+    byConv.set(parsed.convId, set);
+  }
+  return byConv;
+}
+
+function reconcileRecords(records: AgentRecord[], live: ReadonlySet<string>, isInFlight: (instanceId: string) => boolean): { records: AgentRecord[]; changed: boolean; stopIds: AgentRecord[] } {
   let changed = false;
   const stopIds: AgentRecord[] = [];
   const next = records.map((rec): AgentRecord => {

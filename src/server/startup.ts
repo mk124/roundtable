@@ -12,8 +12,10 @@ import { RedactingLogger } from './logging.ts';
 import { SseHub, type SseClient } from './sse.ts';
 import { AgentSupervisor } from '../agents/supervisor.ts';
 import { AgentCoordinator, STOP_UNCONFIRMED } from '../agents/coordinator.ts';
-import type { AgentKind } from '../agents/record.ts';
+import type { AgentDto, AgentKind } from '../agents/record.ts';
 import { agentSessionNamespace } from '../agents/session-name.ts';
+
+const PROJECTS_FRAME = 'event: projects\ndata: {}\n\n';
 
 interface ConversationContext {
   log: ConversationLog;
@@ -45,6 +47,7 @@ export class RoundtableService implements RoundtableApp {
   private readonly removing = new Set<string>(); // project ids mid-teardown; never (re)resolved
   private readonly supervisor: AgentSupervisor;
   private readonly agents: AgentCoordinator;
+  private readonly projectClients = new Set<SseClient>();
 
   /** `limits` overrides the per-conversation size caps; production uses the
    *  defaults, tests inject small caps to exercise the read-only path. */
@@ -60,7 +63,10 @@ export class RoundtableService implements RoundtableApp {
       roundtablePath: deps.roundtablePath ?? process.cwd(),
       baseUrl: deps.baseUrl ?? 'http://127.0.0.1:8787',
       watcherCount: (conversationId) => this.contexts.get(conversationId)?.sse.clientCount ?? 0,
-      onChange: (conversationId) => this.contexts.get(conversationId)?.sse.publishAgents(),
+      onChange: (conversationId) => {
+        this.contexts.get(conversationId)?.sse.publishAgents();
+        this.publishProjects();
+      },
       onError: deps.onAgentError,
     });
   }
@@ -69,9 +75,14 @@ export class RoundtableService implements RoundtableApp {
    *  ordered by recent activity (a project's newest conversation, else addedAt). */
   async listProjects(): Promise<ProjectWithConversations[]> {
     const projects = await this.projects.list();
-    const groups = await Promise.all(
+    const listed = await Promise.all(
       projects.map(async (project) => ({ project, conversations: await this.storeFor(project).list() })),
     );
+    const agents = await this.agents.listMany(listed.flatMap((g) => g.conversations.map((c) => c.id)));
+    const groups = listed.map(({ project, conversations }) => ({
+      project,
+      conversations: conversations.map((c) => ({ ...c, activeAgentKinds: activeAgentKinds(agents.get(c.id) ?? []) })),
+    }));
     const activity = (g: ProjectWithConversations) => g.conversations[0]?.lastActivityAt ?? g.project.addedAt;
     return groups.sort((a, b) => activity(b).localeCompare(activity(a)));
   }
@@ -234,6 +245,12 @@ export class RoundtableService implements RoundtableApp {
     return this.contexts.get(conversationId)?.sse.activitySnapshot() ?? [];
   }
 
+  async subscribeProjects(client: SseClient): Promise<() => void> {
+    this.projectClients.add(client);
+    client.write(PROJECTS_FRAME);
+    return () => void this.projectClients.delete(client);
+  }
+
   async subscribe(conversationId: string, client: SseClient, lastEventId: number) {
     const ctx = await this.context(conversationId);
     if (!ctx) return null;
@@ -254,6 +271,8 @@ export class RoundtableService implements RoundtableApp {
       error = err;
     }
     for (const ctx of this.contexts.values()) ctx.sse.close();
+    for (const client of this.projectClients) client.close?.();
+    this.projectClients.clear();
     this.contexts.clear();
     this.convToProject.clear();
     this.stores.clear();
@@ -306,6 +325,10 @@ export class RoundtableService implements RoundtableApp {
     this.contexts.get(conversationId)?.sse.close();
     this.contexts.delete(conversationId);
     this.convToProject.delete(conversationId);
+  }
+
+  private publishProjects(): void {
+    for (const client of this.projectClients) client.write(PROJECTS_FRAME);
   }
 
   /** A project's ConversationStore, cached by project id. */
@@ -377,6 +400,10 @@ export class RoundtableService implements RoundtableApp {
     });
     return run;
   }
+}
+
+function activeAgentKinds(records: AgentDto[]): AgentKind[] {
+  return [...new Set(records.filter((r) => r.status === 'starting' || r.status === 'running').map((r) => r.kind))];
 }
 
 // Startup sequence

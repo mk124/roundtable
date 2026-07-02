@@ -22,6 +22,7 @@ export interface ConversationDTO {
   id: string;
   title: string;
   readOnly: boolean;
+  activeAgentKinds?: AgentKind[];
 }
 
 /** A sidebar group: a registered project with its conversations embedded, already
@@ -87,6 +88,20 @@ export interface StreamHandlers {
   onDrop: () => void;
 }
 
+export interface ProjectStreamHandlers {
+  onProjects: () => void;
+  onDrop: () => void;
+}
+
+/** The per-frame callbacks the SSE reader dispatches to; each stream supplies only
+ *  the events it cares about, so every field is optional. */
+interface FrameHandlers {
+  onMessage?: () => void;
+  onActivity?: (active: ActivityEntry[]) => void;
+  onAgents?: () => void;
+  onProjects?: () => void;
+}
+
 export async function streamEvents(id: string, lastEventId: number, signal: AbortSignal, handlers: StreamHandlers): Promise<void> {
   let res: Response;
   try {
@@ -104,7 +119,28 @@ export async function streamEvents(id: string, lastEventId: number, signal: Abor
     return;
   }
   handlers.onOpen?.();
-  const reader = res.body.getReader();
+  await readFrames(res.body, handlers);
+  handlers.onDrop();
+}
+
+export async function streamProjectEvents(signal: AbortSignal, handlers: ProjectStreamHandlers): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch('/api/projects/events', { signal });
+  } catch {
+    handlers.onDrop();
+    return;
+  }
+  if (!res.ok || !res.body) {
+    handlers.onDrop();
+    return;
+  }
+  await readFrames(res.body, handlers);
+  handlers.onDrop();
+}
+
+async function readFrames(body: ReadableStream<Uint8Array>, handlers: FrameHandlers): Promise<void> {
+  const reader = body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
   for (;;) {
@@ -122,10 +158,9 @@ export async function streamEvents(id: string, lastEventId: number, signal: Abor
       buf = buf.slice(sep + 2);
     }
   }
-  handlers.onDrop();
 }
 
-function dispatchFrame(frame: string, handlers: StreamHandlers): void {
+function dispatchFrame(frame: string, handlers: FrameHandlers): void {
   let event = 'message';
   let data = '';
   let hasData = false;
@@ -139,13 +174,15 @@ function dispatchFrame(frame: string, handlers: StreamHandlers): void {
   if (!hasData) return;
   if (event === 'activity') {
     try {
-      handlers.onActivity((JSON.parse(data) as { active: ActivityEntry[] }).active);
+      handlers.onActivity?.((JSON.parse(data) as { active: ActivityEntry[] }).active);
     } catch {
       /* ignore a malformed frame */
     }
   } else if (event === 'message') {
-    handlers.onMessage();
+    handlers.onMessage?.();
   } else if (event === 'agents') {
-    handlers.onAgents();
+    handlers.onAgents?.();
+  } else if (event === 'projects') {
+    handlers.onProjects?.();
   }
 }

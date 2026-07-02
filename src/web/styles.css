@@ -203,12 +203,39 @@ textarea {
 .nav-item--add:hover {
   background: var(--nav-hover);
 }
+.nav-item__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-agent-dots {
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+.sidebar-agent-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.sidebar-agent-dot.accent-claude { background: var(--agent-claude); }
+.sidebar-agent-dot.accent-gpt { background: var(--agent-gpt); }
+.sidebar-agent-dot.accent-gemini { background: var(--agent-gemini); }
 
 /* Conversation rows: the whole row (title + delete) is the hover/selected
    surface, so the ✕ sits inside the highlight instead of beside it. */
 .nav-row {
   display: flex;
   align-items: center;
+  position: relative;
   border: 1px solid transparent;
   border-radius: 8px;
 }
@@ -246,6 +273,10 @@ textarea {
 .nav-row:focus-within .nav-row__btn {
   opacity: 1;
 }
+.nav-row:hover .sidebar-agent-dots,
+.nav-row:focus-within .sidebar-agent-dots {
+  opacity: 0;
+}
 .nav-row__btn:hover {
   background: var(--surface-2);
 }
@@ -254,7 +285,7 @@ textarea {
 }
 
 .badge {
-  margin-left: auto;
+  flex: none;
   font-size: 11px;
   padding: 1px 7px;
   border-radius: 999px;
