@@ -384,7 +384,14 @@ export class RoundtableService implements RoundtableApp {
     const meta = await store.get(conversationId);
     if (!meta) return null;
     const log = await ConversationLog.open(store.conversationFilePath(meta), this.limits);
-    if (log.readOnly && !meta.readOnly) await store.update(conversationId, { readOnly: true });
+    // openContext is reached from view/subscribe outside the `mutate` lock, and
+    // the meta sidecar must have a single serialized writer (it also carries the
+    // agent records). Enqueue the read-only flip on the lock instead of writing
+    // inline; best-effort like say's lastActivityAt — the in-memory log already
+    // enforces read-only, the sidecar flag only feeds the sidebar and restarts.
+    if (log.readOnly && !meta.readOnly) {
+      void this.mutate(conversationId, () => store.update(conversationId, { readOnly: true })).catch(() => {});
+    }
     const ctx: ConversationContext = { log, sse: new SseHub(), store };
     this.contexts.set(conversationId, ctx);
     return ctx;

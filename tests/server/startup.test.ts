@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RoundtableService } from '../../src/server/startup.ts';
@@ -192,6 +192,25 @@ test('say restores read-only after restart once the conversation total is exhaus
   const restarted = new RoundtableService({ home, limits: TINY });
   const restored = (await restarted.listProjects()).flatMap((group) => group.conversations).find((c) => c.id === conv.id);
   assert.equal(restored?.readOnly, true);
+});
+
+test('opening a conversation with a corrupt log persists the read-only flag', async () => {
+  const { home, service, projectId } = await withProject();
+  const conv = await makeConversation(service, projectId, 'corrupt');
+  await service.say(conv.id, { model: 'user' }, 'hello');
+  const md = (await readdir(home, { recursive: true })).find((name) => name.endsWith('.md'));
+  assert.ok(md);
+  await writeFile(join(home, md), 'not a roundtable log\n');
+
+  const restarted = new RoundtableService({ home });
+  assert.equal((await restarted.view(conv.id))?.readOnly, true);
+  // The flip persists asynchronously; poll the public listing until it lands.
+  for (let i = 0; i < 50; i += 1) {
+    const listed = (await restarted.listProjects()).flatMap((group) => group.conversations).find((c) => c.id === conv.id);
+    if (listed?.readOnly) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail('read-only flag was never persisted');
 });
 
 test('say preserves message markdown exactly after the non-empty check', async () => {
