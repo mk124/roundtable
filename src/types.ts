@@ -1,5 +1,7 @@
 /** Shared domain types and protocol constants for roundtable. */
 
+import type { AgentRecord } from './agents/record.ts';
+
 /* Events */
 
 /** Event kinds persisted in the Markdown log. */
@@ -58,6 +60,8 @@ export interface ConversationMetadata {
   lastActivityAt: string;
   /** Set once the conversation-total storage limit is reached. */
   readOnly?: boolean;
+  /** Launched-agent records; absent when the conversation has none. */
+  agents?: AgentRecord[];
 }
 
 /**

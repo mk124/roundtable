@@ -263,7 +263,7 @@ export class AgentCoordinator {
     const liveSessions = await this.d.supervisor.liveSessions();
     if (liveSessions === null) return;
     const liveByConv = liveByConversation(liveSessions);
-    const reconciled = await Promise.all(convIds.map(async (convId) => {
+    const reconciled = await Promise.all(convIds.map((convId) => this.d.lock(convId, async () => {
       const store = await this.d.storeFor(convId);
       if (!store) return { convId, unreadable: false, known: [] as string[] };
       const live = liveByConv.get(convId) ?? new Set();
@@ -278,7 +278,7 @@ export class AgentCoordinator {
         this.changed(convId);
       }
       return { convId, unreadable: false, known: next.map((rec) => key(convId, rec.instanceId)) };
-    }));
+    })));
     const known = new Set(reconciled.flatMap((result) => result.known));
     const unreadable = new Set(reconciled.filter((result) => result.unreadable).map((result) => result.convId));
     await Promise.all(liveSessions.map(async (name) => {

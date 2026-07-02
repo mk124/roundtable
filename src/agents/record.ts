@@ -1,6 +1,6 @@
 /**
  * Agent domain records: the kinds roundtable can launch, their lifecycle status,
- * and the per-conversation record persisted in the `<id>.agents.json` sidecar.
+ * and the per-conversation record persisted in the conversation's meta sidecar.
  *
  * The runtime kind/status lists are the single source of truth; the union types
  * are derived from them, so validation and typing never drift apart.

@@ -6,7 +6,6 @@ import { isRecord, readJsonSidecar, writeJsonPrivate } from '../storage/sidecar.
 import { conversationFilename, conversationId, filenameSuffix, isConversationId } from './naming.ts';
 
 const META_SUFFIX = '.meta.json';
-const AGENTS_SUFFIX = '.agents.json';
 
 /** Only these fields are mutable; the id and filename are fixed at creation. */
 export type ConversationUpdate = Partial<
@@ -114,33 +113,39 @@ export class ConversationStore {
     return (await this.readAgentsForReconcile(id)) ?? [];
   }
 
-  /** Read agent records for reconcile. Null means the sidecar is present but
-   *  corrupt, so callers must not treat live sessions as orphaned. */
+  /** Read agent records for reconcile. Null means the meta is present but its
+   *  records are unreadable, so callers must not treat live sessions as orphaned. */
   async readAgentsForReconcile(id: string): Promise<AgentRecord[] | null> {
     if (!isConversationId(id)) return [];
     let parsed: unknown;
     try {
-      parsed = JSON.parse(await readFile(this.agentsPath(id), 'utf8'));
+      parsed = JSON.parse(await readFile(this.metaPath(id), 'utf8'));
     } catch (err) {
       return (err as NodeJS.ErrnoException).code === 'ENOENT' ? [] : null;
     }
-    return agentRecordArray(parsed);
+    if (!isRecord(parsed)) return null;
+    return parsed.agents === undefined ? [] : agentRecordArray(parsed.agents);
   }
 
-  /** Replace a conversation's agent records. */
+  /** Replace a conversation's agent records inside its meta sidecar; a no-op for
+   *  an unknown conversation, so it can never persist an identity-less record. */
   async writeAgents(id: string, records: AgentRecord[]): Promise<void> {
-    await writeJsonPrivate(this.agentsPath(id), records);
+    const meta = await this.get(id);
+    if (!meta) return;
+    const next = { ...meta };
+    if (records.length > 0) next.agents = records;
+    else delete next.agents;
+    await this.writeMeta(next);
   }
 
-  /** Remove a conversation's Markdown log and its sidecars. Returns false when no
-   *  such conversation exists; missing files are tolerated so a partial earlier
-   *  deletion still completes. */
+  /** Remove a conversation's Markdown log and its meta sidecar. Returns false
+   *  when no such conversation exists; missing files are tolerated so a partial
+   *  earlier deletion still completes. */
   async delete(id: string): Promise<boolean> {
     const meta = await this.get(id);
     if (!meta) return false;
     await rm(this.conversationFilePath(meta), { force: true });
     await rm(this.metaPath(id), { force: true });
-    await rm(this.agentsPath(id), { force: true });
     return true;
   }
 
@@ -151,10 +156,6 @@ export class ConversationStore {
 
   private metaPath(id: string): string {
     return join(this.dir, `${id}${META_SUFFIX}`);
-  }
-
-  private agentsPath(id: string): string {
-    return join(this.dir, `${id}${AGENTS_SUFFIX}`);
   }
 
   private async writeMeta(meta: ConversationMetadata): Promise<void> {
@@ -171,6 +172,8 @@ export class ConversationStore {
   }
 }
 
+/** Validates identity fields only. `agents` is deliberately left to the
+ *  reconcile read: a malformed records array must not hide the conversation. */
 function isConversationMetadata(value: unknown): value is ConversationMetadata {
   if (!isRecord(value)) return false;
   return (
