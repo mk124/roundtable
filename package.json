@@ -12,7 +12,8 @@
     "start": "node src/server/startup.ts",
     "test": "node --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json",
-    "install-skill": "bash install-skill.sh"
+    "install-skill": "bash install-skill.sh",
+    "screenshot": "node screenshot/capture.ts"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.1.2",
