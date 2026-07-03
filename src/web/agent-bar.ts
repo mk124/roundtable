@@ -220,7 +220,7 @@ export interface AgentBarActions {
   cancelConfigure: () => void;
   launchConfigured: (kind: AgentKind, config: AgentConfigInput) => Promise<{ ok: boolean; error?: string }>;
   togglePopover: (agent: AgentDto) => void;
-  configureAgent: (agent: AgentDto, config: AgentConfigInput) => Promise<{ ok: boolean; error?: string }>;
+  configureAgent: (agent: AgentDto, config: AgentConfigInput) => void;
   copyAttach: (agent: AgentDto, button: HTMLButtonElement) => Promise<void>;
   stopAgent: (agent: AgentDto) => Promise<void>;
   resumeAgent: (agent: AgentDto) => Promise<void>;
@@ -427,14 +427,12 @@ function renderAgentPopover(doc: Document, agent: AgentDto, actions: AgentBarAct
   const controls = renderConfigControls(doc, agent.kind, editable && draft ? draft : dtoDraft(agent), !editable);
   panel.appendChild(controls.element);
   if (!editable) panel.appendChild(el(doc, 'div', 'agent-config__hint', EDIT_REQUIRES_STOPPED));
-  const error = el(doc, 'div', 'agent-config__error');
-  panel.appendChild(error);
 
   const foot = el(doc, 'div', 'agent-popover__foot');
   if (editable) {
     const save = el(doc, 'button', 'agent-config__btn agent-config__btn--primary', 'Save') as HTMLButtonElement;
     save.type = 'button';
-    bindSubmit(save, error, 'Saving…', () => actions.configureAgent(agent, configPatch(agent.kind, dtoDraft(agent), controls.read())));
+    save.onclick = () => actions.configureAgent(agent, configPatch(agent.kind, dtoDraft(agent), controls.read()));
     foot.appendChild(save);
   } else {
     const copy = el(doc, 'button', 'agent-config__btn', 'Copy tmux command') as HTMLButtonElement;

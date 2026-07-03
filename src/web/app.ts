@@ -692,7 +692,7 @@ export class App {
       cancelConfigure: () => this.setAgentMenuConfig(null),
       launchConfigured: (kind, config) => this.launchConfigured(conversationId, kind, config),
       togglePopover: (agent) => this.togglePopover(agent.instanceId),
-      configureAgent: (agent, config) => this.configureAgent(conversationId, agent.instanceId, config),
+      configureAgent: (agent, config) => void this.configureAgent(conversationId, agent.instanceId, config),
       copyAttach: (agent, button) => this.copyAttach(agent, button),
       stopAgent: (agent) => this.runAgentAction(conversationId, () => this.api.stopAgent(conversationId, agent.instanceId)),
       resumeAgent: (agent) => this.runAgentAction(conversationId, () => this.api.resumeAgent(conversationId, agent.instanceId)),
@@ -841,11 +841,13 @@ export class App {
     }
   }
 
-  private async configureAgent(conversationId: string, instanceId: string, config: AgentConfigInput): Promise<{ ok: boolean; error?: string }> {
+  /** Save closes the popover at once; the write lands in the background and its
+   *  outcome is announced. */
+  private async configureAgent(conversationId: string, instanceId: string, config: AgentConfigInput): Promise<void> {
+    this.closePopover();
     const res = await this.api.configureAgent(conversationId, instanceId, config);
-    if (res.ok) this.announce('Launch settings saved.');
+    this.announce(res.ok ? 'Launch settings saved.' : res.error ?? 'Could not save launch settings.');
     await this.refreshAgents(conversationId);
-    return { ok: res.ok, error: res.error };
   }
 
   private copyAttach(agent: AgentDto, button: HTMLButtonElement): Promise<void> {
