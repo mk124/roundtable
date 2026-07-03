@@ -99,7 +99,9 @@ export interface SupervisorOptions {
   tmux?: TmuxRunner;
   resolveCommand?: CommandResolver;
   namespace?: string;
-  owner?: AgentOwner;
+  /** Required: every agent is launched under owner-monitor so it dies with the
+   *  server. There is deliberately no unmanaged launch path. */
+  owner: AgentOwner;
   trust?: TrustPreparer;
   /** How long to watch for a codex/agy session file before giving up (ms). */
   captureTimeoutMs?: number;
@@ -113,7 +115,7 @@ export class AgentSupervisor {
   private readonly tmux: TmuxRunner;
   private readonly resolveCommand: CommandResolver;
   private readonly namespace: string;
-  private readonly owner: AgentOwner | null;
+  private readonly owner: AgentOwner;
   private readonly trust: TrustPreparer;
   private readonly captureTimeoutMs: number;
   private readonly captureLimit: number;
@@ -126,12 +128,12 @@ export class AgentSupervisor {
    *  tmux has created a session. */
   private readonly pending = new Map<string, PendingLaunch>();
 
-  constructor(options: SupervisorOptions = {}) {
+  constructor(options: SupervisorOptions) {
     const tmuxTimeoutMs = options.tmuxTimeoutMs ?? DEFAULT_TMUX_TIMEOUT_MS;
     this.tmux = options.tmux ? withTimeout(options.tmux, tmuxTimeoutMs) : realTmux(tmuxTimeoutMs);
     this.resolveCommand = options.resolveCommand ?? realCommandResolver;
     this.namespace = options.namespace ?? 'local';
-    this.owner = options.owner ?? null;
+    this.owner = options.owner;
     this.trust = options.trust ?? prepareTrustedWorkspace;
     this.captureTimeoutMs = options.captureTimeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS;
     this.captureLimit = options.captureLimit ?? 6;
@@ -243,7 +245,6 @@ export class AgentSupervisor {
   }
 
   private wrapOwnerMonitor(spec: LaunchSpec, argv: string[]): string[] {
-    if (!this.owner) return argv;
     return [
       process.execPath,
       join(spec.roundtablePath, 'src', 'agents', 'owner-monitor.ts'),

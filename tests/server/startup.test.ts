@@ -10,6 +10,10 @@ import type { SizeLimits } from '../../src/types.ts';
 const tempHome = () => mkdtemp(join(tmpdir(), 'rt-svc-'));
 const tempProjectPath = () => mkdtemp(join(tmpdir(), 'rt-proj-'));
 
+// A dummy owner: the service now requires one so every launch is supervised. Under
+// the fake tmux the owner-monitor wrapper is never executed, so the values are inert.
+const TEST_OWNER = { hostname: 'test-host', pid: 1, token: 'test-token', lockPath: '/tmp/roundtable-test.lock' };
+
 async function withFakeTmux(fn: (logPath: string, sessionsPath: string) => Promise<void>, options: { killRemoves?: boolean } = {}): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'rt-fake-tmux-'));
   const bin = join(root, 'bin');
@@ -86,7 +90,7 @@ const TINY: SizeLimits = { messageBytes: 1_000_000, singleEventBytes: 1_000_000,
 async function withProject(limits?: SizeLimits) {
   const home = await tempHome();
   const projectPath = await tempProjectPath();
-  const service = new RoundtableService({ home, limits });
+  const service = new RoundtableService({ home, limits, owner: TEST_OWNER });
   const added = await service.addProject(projectPath);
   if (!added.ok) throw new Error(added.error);
   return { home, projectPath, service, projectId: added.project.id };
@@ -178,7 +182,7 @@ test('a fresh service can read an existing conversation by id', async () => {
   const conv = await makeConversation(service, projectId, 'persisted');
   await service.say(conv.id, { model: 'user' }, 'hello');
 
-  const restarted = new RoundtableService({ home });
+  const restarted = new RoundtableService({ home, owner: TEST_OWNER });
   assert.equal((await restarted.view(conv.id))?.events.length, 1);
 });
 
@@ -189,7 +193,7 @@ test('say restores read-only after restart once the conversation total is exhaus
   const res = await service.say(conv.id, { model: 'user' }, 'hi');
   assert.equal(res.ok, false);
 
-  const restarted = new RoundtableService({ home, limits: TINY });
+  const restarted = new RoundtableService({ home, limits: TINY, owner: TEST_OWNER });
   const restored = (await restarted.listProjects()).flatMap((group) => group.conversations).find((c) => c.id === conv.id);
   assert.equal(restored?.readOnly, true);
 });
@@ -202,7 +206,7 @@ test('opening a conversation with a corrupt log persists the read-only flag', as
   assert.ok(md);
   await writeFile(join(home, md), 'not a roundtable log\n');
 
-  const restarted = new RoundtableService({ home });
+  const restarted = new RoundtableService({ home, owner: TEST_OWNER });
   assert.equal((await restarted.view(conv.id))?.readOnly, true);
   // The flip persists asynchronously; poll the public listing until it lands.
   for (let i = 0; i < 50; i += 1) {
@@ -251,7 +255,7 @@ test('delete racing with a first read leaves no resolvable conversation', async 
   await Promise.all([service.view(conv.id), service.deleteConversation(conv.id)]);
 
   assert.equal(await service.view(conv.id), null);
-  assert.equal(await new RoundtableService({ home }).view(conv.id), null);
+  assert.equal(await new RoundtableService({ home, owner: TEST_OWNER }).view(conv.id), null);
   assert.equal((await service.listProjects()).flatMap((group) => group.conversations).some((c) => c.id === conv.id), false);
 });
 
@@ -268,7 +272,7 @@ test('deleting an open conversation wins over later same-tick mutations', async 
   assert.deepEqual(await sayResult, { ok: false, error: 'unknown conversation' });
   assert.deepEqual(await activityResult, { ok: false, error: 'unknown conversation' });
   assert.equal(await service.view(conv.id), null);
-  assert.equal(await new RoundtableService({ home }).view(conv.id), null);
+  assert.equal(await new RoundtableService({ home, owner: TEST_OWNER }).view(conv.id), null);
 });
 
 test('deleteConversation leaves data and streams intact when agent stop is unconfirmed', async () => {
@@ -288,7 +292,7 @@ test('deleteConversation leaves data and streams intact when agent stop is uncon
     assert.deepEqual(deleted, { ok: false, error: 'agent stop could not be confirmed', status: 503 });
     assert.equal(closed, false);
     assert.equal((await service.view(conv.id))?.events.length, 1);
-    assert.equal((await new RoundtableService({ home }).view(conv.id))?.events.length, 1);
+    assert.equal((await new RoundtableService({ home, owner: TEST_OWNER }).view(conv.id))?.events.length, 1);
   }, { killRemoves: false });
 });
 
@@ -384,7 +388,7 @@ test('removeProject racing a first subscribe leaves no resolvable conversation',
   const conv = await makeConversation(service, projectId, 'cold');
   await service.say(conv.id, { model: 'user' }, 'hi');
 
-  const restarted = new RoundtableService({ home });
+  const restarted = new RoundtableService({ home, owner: TEST_OWNER });
   let closed = false;
   const client: SseClient = { write() {}, close() { closed = true; } };
   const [unsubscribe] = await Promise.all([
@@ -409,7 +413,7 @@ test('createConversation racing removeProject never yields a conversation that r
 
 test('listProjects orders projects by most recent conversation activity', async () => {
   const home = await tempHome();
-  const service = new RoundtableService({ home });
+  const service = new RoundtableService({ home, owner: TEST_OWNER });
   const older = await service.addProject(await tempProjectPath());
   const newer = await service.addProject(await tempProjectPath());
   if (!older.ok || !newer.ok) throw new Error('addProject failed');

@@ -50,8 +50,9 @@ export class RoundtableService implements RoundtableApp {
   private readonly projectClients = new Set<SseClient>();
 
   /** `limits` overrides the per-conversation size caps; production uses the
-   *  defaults, tests inject small caps to exercise the read-only path. */
-  constructor(deps: { home: string; limits?: SizeLimits; roundtablePath?: string; baseUrl?: string; owner?: StorageLockIdentity; onAgentError?: (err: unknown) => void }) {
+   *  defaults, tests inject small caps to exercise the read-only path. `owner` is
+   *  required so every launched agent is supervised by owner-monitor. */
+  constructor(deps: { home: string; owner: StorageLockIdentity; limits?: SizeLimits; roundtablePath?: string; baseUrl?: string; onAgentError?: (err: unknown) => void }) {
     this.projects = new ProjectStore(deps.home);
     this.limits = deps.limits;
     this.supervisor = new AgentSupervisor({ owner: deps.owner, namespace: agentSessionNamespace(deps.home) });
