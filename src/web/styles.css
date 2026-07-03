@@ -5,16 +5,14 @@
 :root {
   --bg: #f7f7f8;
   --surface: #ffffff;
-  --surface-2: #f0f0f3;
+  --surface-2: #e6e6e6;
   --border: #e1e1e6;
   --text: #1d1d22;
   --muted: #6b6b75;
   --accent: #3a5bd9;
   --accent-text: #ffffff;
-  /* sidebar nav hover/selected: neutral grays, selected one step darker */
+  /* sidebar row hover; selected rows reuse --surface-2 */
   --nav-hover: #eeeeee;
-  --nav-active: #e6e6e6;
-  --nav-active-border: #d6d6d6;
   --danger: #b3261e;
   --warn: #8a6300;
   --warn-bg: #fff6e0;
@@ -32,15 +30,13 @@
   :root {
     --bg: #14161a;
     --surface: #1c1f26;
-    --surface-2: #23262f;
+    --surface-2: #2b2f38;
     --border: #2b2f38;
     --text: #e6e8ec;
     --muted: #9aa1ad;
     --accent: #6ea8fe;
     --accent-text: #07101f;
     --nav-hover: #24272e;
-    --nav-active: #2b2f38;
-    --nav-active-border: #363b45;
     --danger: #f08a8a;
     --warn: #e8c479;
     --warn-bg: #2a2410;
@@ -243,8 +239,8 @@ textarea {
   background: var(--nav-hover);
 }
 .nav-row:has(.nav-item[aria-current="true"]) {
-  background: var(--nav-active);
-  border-color: var(--nav-active-border);
+  background: var(--surface-2);
+  border-color: var(--border);
 }
 .nav-row .nav-item {
   flex: 1;
