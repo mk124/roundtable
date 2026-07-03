@@ -50,6 +50,7 @@ export interface RoundtableApp {
   say(conversationId: string, identity: SayIdentity, text: string): Promise<{ ok: true; cursor: number } | { ok: false; error: string }>;
   setActivity(conversationId: string, author: string, state: string | null): Promise<{ ok: true } | { ok: false; error: string }>;
   getActivity(conversationId: string): Promise<ActivityEntry[] | null>;
+  heartbeat(conversationId: string): Promise<boolean>;
   subscribeProjects(client: SseClient): Promise<() => void>;
   subscribe(conversationId: string, client: SseClient, lastEventId: number): Promise<(() => void) | null>;
   listAgents(conversationId: string): Promise<{ tmuxAvailable: boolean; agents: AgentDto[] } | null>;
@@ -186,6 +187,8 @@ export function createServer(deps: ServerDeps): http.Server {
         const state = body.value.state == null ? null : String(body.value.state);
         const result = await deps.app.setActivity(id, String(body.value.author ?? ''), state);
         return json(res, result.ok ? 200 : 400, result);
+      } else if (action === 'heartbeat' && req.method === 'POST') {
+        return (await deps.app.heartbeat(id)) ? json(res, 200, { ok: true }) : notFound(res);
       } else if (action === 'agents') {
         const instanceId = seg[3];
         const sub = seg[4];

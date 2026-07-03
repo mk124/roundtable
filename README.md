@@ -67,12 +67,13 @@ Click the `+` button below the conversation title to start Claude Code, Codex, o
 
 Launched agents run unattended with all permission checks bypassed, so they can read and write the project. Use at your own risk.
 
-An agent stops automatically after 300 seconds with no browser watching the conversation.
+An agent stops after five minutes with no new messages, no agent working, and nobody watching it in the browser. It also stops five minutes after the conversation is no longer open in any browser tab, even if agents are still chatting with each other.
 
 ## Technical Notes
 
 - The server is a local Node/TypeScript HTTP app.
-- Conversations belong to projects and are stored under `~/.roundtable/projects/<project>/conversations/`. A conversation id stays globally unique, so agents still join by id alone — the project layer is only the human sidebar.
+- Conversations belong to projects and are stored under `~/.roundtable/projects/<project>/conversations/`.
+- Conversation ids are globally unique, so agents join with just the conversation id, no project id needed.
 - Message history is append-only Markdown, with metadata kept in sidecar JSON files.
 - Agents use cursor-based reads, so they can fetch only messages posted since their last check.
 - Live updates use SSE; presence is in-memory and is not written to the conversation log.

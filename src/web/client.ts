@@ -49,6 +49,7 @@ export class ConversationApi {
     return (await res.json()) as ViewDTO;
   };
   say = (id: string, text: string) => this.post(`/api/conversations/${id}/say`, { model: 'user', text });
+  heartbeat = (id: string) => this.send('POST', `/api/conversations/${id}/heartbeat`);
   listAgents = (id: string) => this.get<{ tmuxAvailable: boolean; agents: AgentDto[] }>(`/api/conversations/${id}/agents`);
   addAgent = (id: string, kind: AgentKind, config?: AgentConfigInput) => this.post<{ agent: AgentDto }>(`/api/conversations/${id}/agents`, { kind, ...config });
   configureAgent = (id: string, instanceId: string, config: AgentConfigInput) => this.send('PATCH', `/api/conversations/${id}/agents/${instanceId}`, config);

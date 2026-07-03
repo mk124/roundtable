@@ -86,7 +86,17 @@ function make(overrides: Partial<CoordinatorDeps> = {}) {
     cap: 3,
     ...overrides,
   });
-  return { coord, store };
+  return { coord, store, sup };
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function waitForStatus(coord: AgentCoordinator, instanceId: string, status: string): Promise<void> {
+  for (let i = 0; i < 100; i += 1) {
+    if ((await coord.list(CONV))?.find((a) => a.instanceId === instanceId)?.status === status) return;
+    await sleep(10);
+  }
+  assert.fail(`agent ${instanceId} did not reach ${status}`);
 }
 
 test('the per-conversation cap rejects with 429', async () => {
@@ -143,4 +153,25 @@ test('resume relaunches resumable stopped and errored agents, then rejects a run
   const errored = await coord.resume(CONV, 'errored-agent');
   assert.equal(errored.ok, true);
   assert.equal((await coord.list(CONV))![0]!.status, 'running');
+});
+
+test('reconcile adopts a still-running session and arms the inactivity window', async () => {
+  const { coord, store, sup } = make({ inactivityMs: 300, watcherCount: () => 1 });
+  await store.writeAgents(CONV, [
+    { kind: 'claude', instanceId: 'adopt', name: 'Claude-adop', createdAt: 't', status: 'running', sessionId: 's1' },
+  ]);
+  sup.live.add(sup.sessionName(CONV, 'adopt', 'claude'));
+
+  await coord.reconcile([CONV]);
+  assert.equal((await coord.list(CONV))![0]!.status, 'running'); // adopted, not killed
+
+  await waitForStatus(coord, 'adopt', 'stopped'); // adoption armed the window, which then fired
+});
+
+test('the no-watcher grace stop still fires independently of the inactivity window', async () => {
+  const { coord } = make({ graceMs: 20, inactivityMs: 100_000, watcherCount: () => 0 });
+  const add = await coord.add(CONV, 'claude');
+  const id = add.ok ? add.agent.instanceId : '';
+
+  await waitForStatus(coord, id, 'stopped'); // grace stop lands long before the inactivity window
 });

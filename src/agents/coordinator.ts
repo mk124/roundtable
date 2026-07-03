@@ -48,6 +48,8 @@ export interface CoordinatorDeps {
   onChange?: (convId: string) => void;
   onError?: (err: unknown) => void;
   graceMs?: number;
+  /** Unattended-inactivity window; defaults to the shared 300s. Tests inject a short one. */
+  inactivityMs?: number;
   cap?: number;
 }
 
@@ -62,7 +64,9 @@ type SpawnSpec = { instanceId: string; kind: AgentKind; name: string; mode: 'new
 type FinalizeSpec = Pick<SpawnSpec, 'instanceId' | 'kind' | 'mode' | 'spawnId'>;
 
 const NAME_PREFIX: Record<AgentKind, string> = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity' };
-const DEFAULT_GRACE_MS = 300_000;
+/** Both auto-stop timers — the no-watcher grace stop and the unattended-inactivity
+ *  stop — reuse the same 300-second duration. */
+const DEFAULT_STOP_MS = 300_000;
 export const STOP_UNCONFIRMED = 'agent stop could not be confirmed';
 const SHUTTING_DOWN = 'server is shutting down';
 const CORRUPT_AGENTS = 'agent records are corrupt';
@@ -71,18 +75,24 @@ const INVALID_CONFIG = 'invalid agent configuration';
 export class AgentCoordinator {
   private readonly d: CoordinatorDeps;
   private readonly graceMs: number;
+  private readonly inactivityMs: number;
   private readonly cap: number;
   /** Per-instance in-flight spawn token; presence means a spawn is pending, so a
    *  second add/resume for the same instance must not start (one in-flight per id). */
   private readonly inflight = new Map<string, number>();
   private spawnCounter = 0;
   private readonly graceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Per-conversation unattended-inactivity window: a pending stop timer, or null
+   *  while live-agent presence pauses the stop. An entry exists only for
+   *  conversations that may have live agents. */
+  private readonly inactivity = new Map<string, ReturnType<typeof setTimeout> | null>();
   private readonly operations = new Set<Promise<void>>();
   private closed = false;
 
   constructor(deps: CoordinatorDeps) {
     this.d = deps;
-    this.graceMs = deps.graceMs ?? DEFAULT_GRACE_MS;
+    this.graceMs = deps.graceMs ?? DEFAULT_STOP_MS;
+    this.inactivityMs = deps.inactivityMs ?? DEFAULT_STOP_MS;
     this.cap = deps.cap ?? 10;
   }
 
@@ -290,6 +300,7 @@ export class AgentCoordinator {
    *  before the SSE close that bypasses the watcher-edge stop. */
   async stopConversation(convId: string): Promise<boolean> {
     this.clearGrace(convId);
+    this.clearInactivity(convId);
     return (await this.d.supervisor.stopAll(convId)).ok;
   }
 
@@ -328,6 +339,7 @@ export class AgentCoordinator {
         await store.writeAgents(convId, next);
         this.changed(convId);
       }
+      if (next.some((rec) => rec.status === 'running')) this.startInactivity(convId); // R2: adopt a still-running session
       return { convId, unreadable: false, known: next.map((rec) => key(convId, rec.instanceId)) };
     })));
     const known = new Set(reconciled.flatMap((result) => result.known));
@@ -345,6 +357,8 @@ export class AgentCoordinator {
     this.closed = true;
     for (const timer of this.graceTimers.values()) clearTimeout(timer);
     this.graceTimers.clear();
+    for (const timer of this.inactivity.values()) if (timer) clearTimeout(timer);
+    this.inactivity.clear();
     const result = await this.d.supervisor.stopAll();
     while (this.operations.size > 0) await Promise.all([...this.operations]);
     const final = await this.d.supervisor.stopAll();
@@ -369,8 +383,11 @@ export class AgentCoordinator {
       if (!rec) return { ok: false as const, error: 'unknown agent', status: 404 as const };
       const stopped = await this.d.supervisor.stop(convId, instanceId, rec.kind); // kills session + aborts any capture
       if (!stopped) return { ok: false as const, error: STOP_UNCONFIRMED, status: 503 as const };
-      if (mode === 'stop') await store.writeAgents(convId, records.map((r) => (r.instanceId === instanceId ? { ...r, status: 'stopped' } : r)));
-      else await store.writeAgents(convId, records.filter((r) => r.instanceId !== instanceId));
+      const next: AgentRecord[] = mode === 'stop'
+        ? records.map((r) => (r.instanceId === instanceId ? { ...r, status: 'stopped' } : r))
+        : records.filter((r) => r.instanceId !== instanceId);
+      await store.writeAgents(convId, next);
+      if (!next.some((r) => r.status === 'running')) this.clearInactivity(convId); // last live agent gone
       this.changed(convId);
       return { ok: true as const };
     });
@@ -430,6 +447,9 @@ export class AgentCoordinator {
       // configured launch never started.
       delete updated.launchError;
       if (!launch.started && isConfigured(rec)) updated.launchError = 'configured-launch-failed';
+      // R2: a live agent starts the inactivity window. Armed before the record is
+      // published so anything that observes `running` finds the window in place.
+      if (next === 'running') this.startInactivity(convId);
       await store.writeAgents(convId, records.map((r) => (r.instanceId === s.instanceId ? updated : r)));
       this.changed(convId);
     });
@@ -450,21 +470,7 @@ export class AgentCoordinator {
     this.graceTimers.delete(convId);
     await this.d.lock(convId, async () => {
       if (this.d.watcherCount(convId) > 0) return; // a watcher returned; keep them running
-      const store = await this.d.storeFor(convId);
-      const result = await this.d.supervisor.stopAll(convId);
-      if (!result.ok || result.sessions === null) {
-        this.reportStopFailure(convId, '*');
-        return;
-      }
-      if (!store || result.sessions.length === 0) return;
-      const stopped = new Set(result.sessions.map((name) => parseAgentSessionName(name)?.instanceId));
-      const records = await this.readWritableAgents(store, convId);
-      if (records === null) {
-        this.reportCorruptAgents(convId);
-        return;
-      }
-      await store.writeAgents(convId, records.map((r) => (stopped.has(r.instanceId) ? { ...r, status: 'stopped' } : r)));
-      this.changed(convId);
+      await this.stopLiveAgents(convId);
     });
   }
 
@@ -474,6 +480,84 @@ export class AgentCoordinator {
       clearTimeout(timer);
       this.graceTimers.delete(convId);
     }
+  }
+
+  // Unattended-inactivity stop: independent of watcher count, it stops a
+  // conversation's live agents once 300s pass with no successful message, no
+  // live-agent presence, and no accepted foreground-view heartbeat.
+
+  /** Launch/resume/reconcile entry: begin the window, but never overwrite an active
+   *  presence pause — a working agent's presence covers every live agent in the
+   *  conversation, so only a presence-clear (notePresence) re-arms it. */
+  private startInactivity(convId: string): void {
+    if (this.inactivity.get(convId) === null) return; // paused by presence
+    this.armInactivity(convId);
+  }
+
+  /** Begin or reset the inactivity window for a conversation with live agents;
+   *  replaces any prior timer so a fresh 300s starts now. The timer's own identity
+   *  marks it current: a fire that no longer matches the map entry was superseded. */
+  private armInactivity(convId: string): void {
+    if (this.closed) return;
+    const prev = this.inactivity.get(convId);
+    if (prev) clearTimeout(prev);
+    const timer = setTimeout(() => {
+      void this.fireInactivityStop(convId, timer).catch((err) => this.d.onError?.(err));
+    }, this.inactivityMs);
+    if (typeof timer === 'object') timer.unref?.();
+    this.inactivity.set(convId, timer);
+  }
+
+  /** A durable message or accepted foreground heartbeat: reset the window, unless
+   *  live-agent presence is currently pausing it. No-op without live agents. */
+  noteActivity(convId: string): void {
+    if (this.inactivity.get(convId)) this.armInactivity(convId);
+  }
+
+  /** Presence crossed the empty/non-empty boundary for a conversation with live
+   *  agents: non-empty pauses the stop; clearing the last entry starts a fresh window. */
+  notePresence(convId: string, active: boolean): void {
+    const current = this.inactivity.get(convId);
+    if (current === undefined) return; // no live agents
+    if (!active) return this.armInactivity(convId);
+    if (current) clearTimeout(current);
+    this.inactivity.set(convId, null); // paused
+  }
+
+  private clearInactivity(convId: string): void {
+    const timer = this.inactivity.get(convId);
+    if (timer) clearTimeout(timer);
+    this.inactivity.delete(convId);
+  }
+
+  private async fireInactivityStop(convId: string, timer: ReturnType<typeof setTimeout>): Promise<void> {
+    await this.d.lock(convId, async () => {
+      if (this.inactivity.get(convId) !== timer) return; // superseded by activity, a pause, or a clear
+      this.inactivity.delete(convId);
+      await this.stopLiveAgents(convId);
+    });
+  }
+
+  /** Stop every live session for the conversation and fold the confirmed stops back
+   *  into the records. Shared by the watcher-grace and inactivity stop paths; assumes
+   *  the conversation lock is held. */
+  private async stopLiveAgents(convId: string): Promise<void> {
+    const store = await this.d.storeFor(convId);
+    const result = await this.d.supervisor.stopAll(convId);
+    if (!result.ok || result.sessions === null) {
+      this.reportStopFailure(convId, '*');
+      return;
+    }
+    this.clearInactivity(convId); // no live agents remain, so no window to keep
+    if (!store || result.sessions.length === 0) return;
+    const stopped = new Set(result.sessions.map((name) => parseAgentSessionName(name)?.instanceId));
+    const records = await this.readWritableAgents(store, convId);
+    if (records === null) {
+      this.reportCorruptAgents(convId);
+      return;
+    }
+    await store.writeAgents(convId, records.map((r) => (stopped.has(r.instanceId) ? { ...r, status: 'stopped' } : r)));
+    this.changed(convId);
   }
 
   private async trackOperation<T>(fn: () => Promise<T>): Promise<T> {

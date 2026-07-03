@@ -20,6 +20,10 @@ interface PopoverFocus {
 
 declare const window: Window & typeof globalThis;
 
+/** Foreground heartbeat cadence: far below the server's 300s inactivity window, so
+ *  ordinary scheduling jitter can never cause a spurious stop while the page is watched. */
+const HEARTBEAT_INTERVAL_MS = 10_000;
+
 function main(doc: Document): void {
   void new App(doc).start();
 }
@@ -43,6 +47,7 @@ export class App {
   private agentPopoverDismiss: ((e: Event) => void) | null = null;
   private jumpToBottomButton: HTMLButtonElement | null = null;
   private activityTimer: number | null = null;
+  private heartbeatTimer: number | null = null;
   private sse: 'connected' | 'reconnecting' | 'disconnected' = 'disconnected';
   private sseAbort: AbortController | null = null;
   private projectSseAbort: AbortController | null = null;
@@ -68,10 +73,39 @@ export class App {
   }
 
   async start(): Promise<void> {
+    // Foreground-view heartbeats keep browser-launched agents alive only while this
+    // tab is actually being watched; recompute eligibility whenever that changes.
+    const sync = () => this.syncHeartbeat();
+    this.doc.addEventListener('visibilitychange', sync);
+    window.addEventListener('focus', sync);
+    window.addEventListener('blur', sync);
     await this.loadProjects();
     this.connectProjectEvents();
     const first = this.firstConversation();
     if (first) await this.openConversation(first.id); // open straight into the first conversation, not an empty pane
+  }
+
+  /** The server counts a foreground heartbeat as activity only while the document is
+   *  visible and the window is focused; a background tab or blurred window sends none. */
+  private foregroundActive(): boolean {
+    return !!this.conversationId && this.doc.visibilityState === 'visible' && this.doc.hasFocus();
+  }
+
+  /** Start, stop, or re-target the ~10s heartbeat loop to match the current
+   *  conversation and foreground state; sends immediately so a switch resets promptly. */
+  private syncHeartbeat(): void {
+    if (this.foregroundActive()) {
+      this.heartbeatTimer ??= window.setInterval(() => this.sendHeartbeat(), HEARTBEAT_INTERVAL_MS);
+      this.sendHeartbeat();
+    } else if (this.heartbeatTimer !== null) {
+      window.clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  private sendHeartbeat(): void {
+    const id = this.conversationId;
+    if (id && this.foregroundActive()) void this.api.heartbeat(id).catch(() => {});
   }
 
   private announce(message: string): void {
@@ -137,6 +171,7 @@ export class App {
     this.resetPopover();
     this.sse = 'connected';
     this.render();
+    this.syncHeartbeat(); // begin foreground heartbeats for the newly opened conversation
     void this.refreshAgents(id);
     await this.refresh();
     if (!this.isCurrentConversation(id, epoch)) return;
@@ -282,6 +317,7 @@ export class App {
     this.composerVersion++;
     this.view = null;
     this.clearActivity();
+    this.syncHeartbeat(); // no conversation open → stop heartbeating
     this.agents = [];
     this.agentsHost = null;
     this.setAgentMenu(false);

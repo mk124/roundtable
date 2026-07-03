@@ -88,18 +88,24 @@ process.exit(0);
 const TINY: SizeLimits = { messageBytes: 1_000_000, singleEventBytes: 1_000_000, conversationTotalBytes: 10 };
 
 /** Boot a service over a fresh home with one registered project. */
-async function withProject(limits?: SizeLimits) {
+async function withProject(limits?: SizeLimits, opts: { inactivityMs?: number } = {}) {
   const home = await tempHome();
   const projectPath = await tempProjectPath();
-  const service = new RoundtableService({ home, limits, owner: TEST_OWNER });
+  const service = new RoundtableService({ home, limits, owner: TEST_OWNER, inactivityMs: opts.inactivityMs });
   const added = await service.addProject(projectPath);
   if (!added.ok) throw new Error(added.error);
   return { home, projectPath, service, projectId: added.project.id };
 }
 
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 async function waitForNextMillisecond(): Promise<void> {
   const start = Date.now();
   while (Date.now() === start) await new Promise<void>((resolve) => setTimeout(resolve, 1));
+}
+
+async function agentStatus(service: RoundtableService, convId: string, instanceId: string): Promise<string | undefined> {
+  return (await service.listAgents(convId))?.agents.find((agent) => agent.instanceId === instanceId)?.status;
 }
 
 async function makeConversation(service: RoundtableService, projectId: string, title: string) {
@@ -225,6 +231,102 @@ test('listAgents exposes ids and an attach command only while the session is liv
     await service.stopAgent(conv.id, id);
     const stopped = (await service.listAgents(conv.id))!.agents.find((a) => a.instanceId === id)!;
     assert.equal(stopped.attachCommand, undefined); // session gone → not attachable, though the record remains
+  });
+});
+
+test('successful messages keep a browser-launched agent alive; rejected ones do not', async () => {
+  await withFakeTmux(async () => {
+    const limits: SizeLimits = { messageBytes: 1_000, singleEventBytes: 1_000_000, conversationTotalBytes: 1_000_000 };
+    const { service, projectId } = await withProject(limits, { inactivityMs: 400 });
+    const conv = await makeConversation(service, projectId, 'message activity');
+    const added = await service.addAgent(conv.id, 'claude');
+    const id = added.ok ? added.agent.instanceId : '';
+    await waitForAgentStatus(service, conv.id, id, 'running');
+
+    for (let i = 0; i < 10; i += 1) {
+      assert.equal((await service.say(conv.id, { model: 'user' }, `m${i}`)).ok, true);
+      await sleep(60); // posts land faster than the 400ms window, whose total span they outlast
+    }
+    assert.equal(await agentStatus(service, conv.id, id), 'running'); // repeated messages kept it alive
+
+    // R10: only size-rejected says now arrive, so the window is not extended and the agent stops.
+    const oversized = 'x'.repeat(5_000);
+    for (let i = 0; i < 40 && (await agentStatus(service, conv.id, id)) !== 'stopped'; i += 1) {
+      assert.equal((await service.say(conv.id, { model: 'user' }, oversized)).ok, false);
+      await sleep(40);
+    }
+    assert.equal(await agentStatus(service, conv.id, id), 'stopped');
+  });
+});
+
+test('non-empty presence keeps an agent alive for any author, and clearing it starts a fresh window', async () => {
+  await withFakeTmux(async () => {
+    const { service, projectId } = await withProject(undefined, { inactivityMs: 300 });
+    const conv = await makeConversation(service, projectId, 'presence activity');
+    const added = await service.addAgent(conv.id, 'claude');
+    const id = added.ok ? added.agent.instanceId : '';
+    await waitForAgentStatus(service, conv.id, id, 'running');
+
+    await service.setActivity(conv.id, 'a-name-no-agent-has', 'investigating'); // author need not match a record
+    await sleep(750); // far past the window; presence pauses the stop
+    assert.equal(await agentStatus(service, conv.id, id), 'running');
+
+    await service.setActivity(conv.id, 'a-name-no-agent-has', null); // last presence cleared → fresh window
+    await waitForAgentStatus(service, conv.id, id, 'stopped');
+  });
+});
+
+test('launching a second agent while presence is active does not cancel the pause', async () => {
+  await withFakeTmux(async () => {
+    const { service, projectId } = await withProject(undefined, { inactivityMs: 300 });
+    const conv = await makeConversation(service, projectId, 'second launch');
+    const first = await service.addAgent(conv.id, 'claude');
+    const firstId = first.ok ? first.agent.instanceId : '';
+    await waitForAgentStatus(service, conv.id, firstId, 'running');
+
+    await service.setActivity(conv.id, 'worker', 'working'); // the first agent is working
+    const second = await service.addAgent(conv.id, 'claude'); // a second agent launches mid-work
+    const secondId = second.ok ? second.agent.instanceId : '';
+    await waitForAgentStatus(service, conv.id, secondId, 'running');
+
+    await sleep(750); // far past the window; presence must still pause both
+    assert.equal(await agentStatus(service, conv.id, firstId), 'running');
+    assert.equal(await agentStatus(service, conv.id, secondId), 'running');
+  });
+});
+
+test('an open SSE subscription without heartbeats does not keep an agent alive and no stop message is written', async () => {
+  await withFakeTmux(async () => {
+    const { service, projectId } = await withProject(undefined, { inactivityMs: 250 });
+    const conv = await makeConversation(service, projectId, 'sse only');
+    const added = await service.addAgent(conv.id, 'claude');
+    const id = added.ok ? added.agent.instanceId : '';
+    await waitForAgentStatus(service, conv.id, id, 'running');
+
+    const unsubscribe = await service.subscribe(conv.id, { write() {} }, 0); // a watcher, but not a foreground heartbeat
+    assert.ok(unsubscribe);
+
+    await waitForAgentStatus(service, conv.id, id, 'stopped');
+    assert.equal((await service.view(conv.id))?.events.length, 0); // R5: automatic stop appends no system message
+    unsubscribe!();
+  });
+});
+
+test('a foreground heartbeat keeps an agent alive, and it stops once heartbeats cease', async () => {
+  await withFakeTmux(async () => {
+    const { service, projectId } = await withProject(undefined, { inactivityMs: 400 });
+    const conv = await makeConversation(service, projectId, 'heartbeat activity');
+    const added = await service.addAgent(conv.id, 'claude');
+    const id = added.ok ? added.agent.instanceId : '';
+    await waitForAgentStatus(service, conv.id, id, 'running');
+
+    for (let i = 0; i < 10; i += 1) {
+      assert.equal(await service.heartbeat(conv.id), true);
+      await sleep(60); // heartbeats land faster than the 400ms window, whose total span they outlast
+    }
+    assert.equal(await agentStatus(service, conv.id, id), 'running');
+
+    await waitForAgentStatus(service, conv.id, id, 'stopped'); // heartbeats ceased → window elapses
   });
 });
 

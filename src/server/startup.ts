@@ -53,7 +53,7 @@ export class RoundtableService implements RoundtableApp {
   /** `limits` overrides the per-conversation size caps; production uses the
    *  defaults, tests inject small caps to exercise the read-only path. `owner` is
    *  required so every launched agent is supervised by owner-monitor. */
-  constructor(deps: { home: string; owner: StorageLockIdentity; limits?: SizeLimits; roundtablePath?: string; baseUrl?: string; onAgentError?: (err: unknown) => void }) {
+  constructor(deps: { home: string; owner: StorageLockIdentity; limits?: SizeLimits; roundtablePath?: string; baseUrl?: string; onAgentError?: (err: unknown) => void; inactivityMs?: number }) {
     this.projects = new ProjectStore(deps.home);
     this.limits = deps.limits;
     this.supervisor = new AgentSupervisor({ owner: deps.owner, namespace: agentSessionNamespace(deps.home) });
@@ -70,6 +70,7 @@ export class RoundtableService implements RoundtableApp {
         this.publishProjects();
       },
       onError: deps.onAgentError,
+      inactivityMs: deps.inactivityMs,
     });
   }
 
@@ -219,7 +220,8 @@ export class RoundtableService implements RoundtableApp {
       // 500 that makes the client retry and duplicate it.
       await ctx.store.update(conversationId, { lastActivityAt: new Date().toISOString() }).catch(() => {});
       ctx.sse.publish(cursor, { cursor }); // clients refetch the view on any bump
-      ctx.sse.setActivity(author, null); // posting a message ends that author's presence
+      this.applyPresence(conversationId, ctx.sse, author, null); // posting a message ends that author's presence
+      this.agents.noteActivity(conversationId); // R1: a durable message resets the inactivity window (paused presence excepted)
       return { ok: true as const, cursor };
     });
   }
@@ -230,9 +232,20 @@ export class RoundtableService implements RoundtableApp {
     return this.mutate(conversationId, async () => {
       const ctx = await this.context(conversationId);
       if (!ctx) return { ok: false as const, error: 'unknown conversation' };
-      ctx.sse.setActivity(author, state);
+      this.applyPresence(conversationId, ctx.sse, author, state);
       return { ok: true as const };
     });
+  }
+
+  /** Apply a presence change and, only when it crosses the empty/non-empty boundary,
+   *  notify the coordinator: non-empty pauses the inactivity stop, clearing the last
+   *  entry starts a fresh window (R6/R7); state changes in-between are no-ops. The
+   *  coordinator ignores this unless the conversation has live agents. */
+  private applyPresence(conversationId: string, sse: SseHub, author: string, state: string | null): void {
+    const had = sse.activitySnapshot().length > 0;
+    sse.setActivity(author, state);
+    const has = sse.activitySnapshot().length > 0;
+    if (had !== has) this.agents.notePresence(conversationId, has);
   }
 
   /** Current presence snapshot, or null when the conversation is unknown.
@@ -245,6 +258,17 @@ export class RoundtableService implements RoundtableApp {
     const store = await this.resolveStore(conversationId);
     if (!store || !(await store.get(conversationId))) return null;
     return this.contexts.get(conversationId)?.sse.activitySnapshot() ?? [];
+  }
+
+  /** R8: a foreground-view heartbeat from the browser resets the inactivity window.
+   *  Like getActivity this skips the mutate queue to keep a frequent poll cheap —
+   *  noteActivity only resets an existing window, so racing a teardown is harmless.
+   *  Returns false for an unknown id. */
+  async heartbeat(conversationId: string): Promise<boolean> {
+    const store = await this.resolveStore(conversationId);
+    if (!store || !(await store.get(conversationId))) return false;
+    this.agents.noteActivity(conversationId);
+    return true;
   }
 
   async subscribeProjects(client: SseClient): Promise<() => void> {

@@ -68,6 +68,9 @@ function fakeApp(over: Partial<RoundtableApp> = {}): RoundtableApp {
     async getActivity(id) {
       return id === 'c1' ? [{ author: 'Claude Opus 4.8', state: 'thinking', since: 't' }] : null;
     },
+    async heartbeat(id) {
+      return id === 'c1';
+    },
     async subscribeProjects() {
       return () => {};
     },
@@ -258,6 +261,17 @@ test('CSRF guard refuses a foreign port and a loopback-lookalike host', async ()
       { Origin: 'http://127.0.0.1.evil.com' },
     );
     assert.equal(lookalike.status, 403);
+  });
+});
+
+test('the heartbeat route accepts a same-origin browser post and 404s an unknown conversation', async () => {
+  await withServer(async ({ origin }) => {
+    // The browser always sends Origin, and the client swallows heartbeat errors, so a
+    // broken route or an over-strict CSRF guard would silently stop watched agents.
+    const same = await postJson(origin, '/api/conversations/c1/heartbeat', {}, { Origin: origin });
+    assert.equal(same.status, 200);
+    const unknown = await postJson(origin, '/api/conversations/nope/heartbeat', {});
+    assert.equal(unknown.status, 404);
   });
 });
 
