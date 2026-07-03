@@ -20,6 +20,8 @@
 #
 # Exit:  0   one-shot printed a message (or streaming ended)
 #        124 timed out before any new message (one-shot with a timeout set)
+#        1   15 consecutive polls failed (server down or conversation gone);
+#            prints one {"error": ...} line first so a watcher wakes on it
 #
 # Requires: curl, jq.
 set -uo pipefail
@@ -31,14 +33,22 @@ cursor="${3:-0}"
 poll="${ROUNDTABLE_POLL:-2}"
 timeout="${ROUNDTABLE_TIMEOUT:-0}"
 
+fails=0
 while :; do
   resp="$(curl -fsS "$BASE/api/conversations/$CONV/messages?since=$cursor" 2>/dev/null || true)"
   if [ -n "$resp" ]; then
+    fails=0
     new="$(printf '%s' "$resp" | jq -c --arg me "$SELF" '.cursor as $c | .messages[] | select(.type == "message" and .author != $me) | {author, text, timestamp, cursor: $c}' 2>/dev/null || true)"
     cursor="$(printf '%s' "$resp" | jq -r --argjson c "$cursor" '.cursor // $c' 2>/dev/null || printf '%s' "$cursor")"
     if [ -n "$new" ]; then
       printf '%s\n' "$new"
       [ -n "${ROUNDTABLE_ONCE:-}" ] && exit 0
+    fi
+  else
+    fails=$((fails + 1))
+    if [ "$fails" -ge 15 ]; then
+      printf '{"error":"no response from %s; server down or conversation gone"}\n' "$BASE/api/conversations/$CONV"
+      exit 1
     fi
   fi
   [ "$timeout" -gt 0 ] && [ "$SECONDS" -ge "$timeout" ] && exit 124
