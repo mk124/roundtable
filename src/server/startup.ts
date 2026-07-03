@@ -48,6 +48,7 @@ export class RoundtableService implements RoundtableApp {
   private readonly supervisor: AgentSupervisor;
   private readonly agents: AgentCoordinator;
   private readonly projectClients = new Set<SseClient>();
+  private projectsFramePending = false;
 
   /** `limits` overrides the per-conversation size caps; production uses the
    *  defaults, tests inject small caps to exercise the read-only path. `owner` is
@@ -328,8 +329,15 @@ export class RoundtableService implements RoundtableApp {
     this.convToProject.delete(conversationId);
   }
 
+  /** Coalesce the sidebar-changed nudge to one frame per tick: lifecycle jumps and
+   *  reconcile/stopAll fire `changed` in bursts, each of which triggers a sidebar refetch. */
   private publishProjects(): void {
-    for (const client of this.projectClients) client.write(PROJECTS_FRAME);
+    if (this.projectsFramePending) return;
+    this.projectsFramePending = true;
+    queueMicrotask(() => {
+      this.projectsFramePending = false;
+      for (const client of this.projectClients) client.write(PROJECTS_FRAME);
+    });
   }
 
   /** A project's ConversationStore, cached by project id. */
