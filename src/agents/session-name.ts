@@ -16,7 +16,7 @@ export interface AgentSessionParts {
 }
 
 export function agentSessionName(namespace: string, kind: AgentKind, convId: string, instanceId: string): string {
-  return `${PREFIX}-${kind}-${namespace}-${convId}-${instanceId}`;
+  return `${PREFIX}-${namespace}-${convId}-${kind}-${instanceId}`;
 }
 
 export function parseAgentSessionName(name: string): AgentSessionParts | null {
@@ -25,7 +25,7 @@ export function parseAgentSessionName(name: string): AgentSessionParts | null {
   const rest = name.slice(prefix.length);
   const parts = rest.split('-');
   if (parts.length < 4) return null;
-  const [kind, namespace, convId, ...instanceParts] = parts;
+  const [namespace, convId, kind, ...instanceParts] = parts;
   const instanceId = instanceParts.join('-');
   return kind && isAgentKind(kind) && namespace && isSafeAgentToken(namespace) && convId && isConversationId(convId) && instanceId && isSafeAgentToken(instanceId)
     ? { namespace, kind, convId, instanceId }

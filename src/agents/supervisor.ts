@@ -1,6 +1,6 @@
 /**
  * tmux-backed process owner. Each agent runs in a detached, uniquely-named tmux
- * session (`roundtable-<kind>-<namespace>-<convId>-<instanceId>`). This class is
+ * session (`roundtable-<namespace>-<convId>-<kind>-<instanceId>`). This class is
  * the only place that touches tmux or the OS; it knows nothing about records or
  * HTTP. AgentCoordinator owns lifecycle state, while startup.ts wires the pair
  * into the service.
