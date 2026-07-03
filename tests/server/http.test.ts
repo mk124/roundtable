@@ -81,8 +81,11 @@ function fakeApp(over: Partial<RoundtableApp> = {}): RoundtableApp {
     },
     async addAgent(id, kind) {
       return id === 'c1'
-        ? { ok: true, agent: { instanceId: 'a1b2c3d4', kind, name: 'Claude-a1b2', status: 'starting', resumable: false } }
+        ? { ok: true, agent: { instanceId: 'a1b2c3d4', kind, name: 'Claude-a1b2', status: 'starting', resumable: false, createdAt: 't' } }
         : { ok: false, error: 'unknown conversation', status: 404 };
+    },
+    async configureAgent(id, instanceId) {
+      return id === 'c1' && instanceId === 'a1' ? { ok: true } : { ok: false, status: 404 };
     },
     async resumeAgent(id, instanceId) {
       return id === 'c1' && instanceId === 'a1' ? { ok: true } : { ok: false, status: 404 };

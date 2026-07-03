@@ -1,6 +1,6 @@
 import { ConversationApi, RECONNECT_DELAY_MS, streamEvents, streamProjectEvents } from './client.ts';
-import type { ActivityEntry, AgentDto, AgentKind, ConversationDTO, EventDTO, ProjectDTO, ViewDTO } from './client.ts';
-import { AGENT_KIND_META, fillAgentRoster, renderAgentBar, syncAgentAddButton, TMUX_REQUIRED, type AgentBarActions, type AgentBarState } from './agent-bar.ts';
+import type { ActivityEntry, AgentConfigInput, AgentDto, AgentKind, ConversationDTO, EventDTO, ProjectDTO, ViewDTO } from './client.ts';
+import { AGENT_KIND_META, fillAgentRoster, isAgentEditable, readConfigDraft, renderAgentBar, syncAgentAddButton, syncAgentMenu, type AgentBarActions, type AgentBarState, type AgentConfigDraft } from './agent-bar.ts';
 import { renderContent } from './render-content.ts';
 import { agentAccent, composerState, el } from './ui-state.ts';
 
@@ -8,6 +8,14 @@ interface SidebarFocus {
   action: string;
   conversationId: string | null;
   projectId: string | null;
+}
+
+/** Which popover config control holds focus, and any text selection within it, so a
+ *  surgical roster rebuild mid-edit can put the caret back where the user left it. */
+interface PopoverFocus {
+  field: string;
+  selStart: number | null;
+  selEnd: number | null;
 }
 
 declare const window: Window & typeof globalThis;
@@ -28,7 +36,11 @@ export class App {
   private agentsHost: HTMLElement | null = null;
   private tmuxAvailable = false;
   private agentMenuOpen = false;
+  private agentMenuConfigKind: AgentKind | null = null;
   private agentMenuDismiss: ((e: Event) => void) | null = null;
+  private openPopoverId: string | null = null;
+  private agentPopoverDraft: AgentConfigDraft | null = null;
+  private agentPopoverDismiss: ((e: Event) => void) | null = null;
   private jumpToBottomButton: HTMLButtonElement | null = null;
   private activityTimer: number | null = null;
   private sse: 'connected' | 'reconnecting' | 'disconnected' = 'disconnected';
@@ -122,6 +134,7 @@ export class App {
     this.clearActivity();
     this.agents = [];
     this.setAgentMenu(false);
+    this.resetPopover();
     this.sse = 'connected';
     this.render();
     void this.refreshAgents(id);
@@ -272,6 +285,7 @@ export class App {
     this.agents = [];
     this.agentsHost = null;
     this.setAgentMenu(false);
+    this.resetPopover();
   }
 
   private clearMissingConversation(id: string): void {
@@ -623,13 +637,27 @@ export class App {
   }
 
   private agentBarState(conversationId: string): AgentBarState {
-    return { conversationId, agents: this.agents, tmuxAvailable: this.tmuxAvailable, menuOpen: this.agentMenuOpen };
+    return {
+      conversationId,
+      agents: this.agents,
+      tmuxAvailable: this.tmuxAvailable,
+      menuOpen: this.agentMenuOpen,
+      menuConfigKind: this.agentMenuConfigKind,
+      openPopoverId: this.openPopoverId,
+      popoverDraft: this.agentPopoverDraft,
+    };
   }
 
   private agentBarActions(conversationId: string): AgentBarActions {
     return {
       toggleMenu: () => this.setAgentMenu(!this.agentMenuOpen),
       addAgent: (kind) => void this.addAgent(conversationId, kind),
+      configureKind: (kind) => this.setAgentMenuConfig(kind),
+      cancelConfigure: () => this.setAgentMenuConfig(null),
+      launchConfigured: (kind, config) => this.launchConfigured(conversationId, kind, config),
+      togglePopover: (agent) => this.togglePopover(agent.instanceId),
+      configureAgent: (agent, config) => this.configureAgent(conversationId, agent.instanceId, config),
+      copyAttach: (agent, button) => this.copyAttach(agent, button),
       stopAgent: (agent) => this.runAgentAction(conversationId, () => this.api.stopAgent(conversationId, agent.instanceId)),
       resumeAgent: (agent) => this.runAgentAction(conversationId, () => this.api.resumeAgent(conversationId, agent.instanceId)),
       removeAgent: (agent) => this.runAgentAction(conversationId, () => this.api.removeAgent(conversationId, agent.instanceId)),
@@ -642,42 +670,152 @@ export class App {
     };
   }
 
-  /** Open or close the kind menu by class (CSP forbids inline style), wiring an
-   *  outside-pointerdown / Escape dismissal while it is open. */
+  /** Open or close the kind menu by class (CSP forbids inline style), wiring
+   *  outside/Escape dismissal while open. Closing resets to the kind list. */
   private setAgentMenu(open: boolean): void {
     this.agentMenuOpen = open;
+    if (!open) this.agentMenuConfigKind = null;
     const plus = this.root.querySelector<HTMLButtonElement>('.agentbar__plus');
-    this.root.querySelector('.agentbar .menu')?.classList.toggle('menu--open', open);
+    this.syncAgentMenu();
     plus?.setAttribute('aria-expanded', String(open));
-    if (this.agentMenuDismiss) {
-      this.doc.removeEventListener('pointerdown', this.agentMenuDismiss);
-      this.doc.removeEventListener('keydown', this.agentMenuDismiss);
-      this.agentMenuDismiss = null;
-    }
-    if (!open) return;
-    this.agentMenuDismiss = (e: Event) => {
+    this.unbindDismiss(this.agentMenuDismiss);
+    this.agentMenuDismiss = open
+      ? this.bindDismiss('.agentbar__add', () => {
+          this.setAgentMenu(false);
+          plus?.focus();
+        })
+      : null;
+  }
+
+  /** Wire an outside-pointerdown / Escape dismissal, exempting clicks inside
+   *  `exempt`. Returns the handler so the caller can later unbind it. */
+  private bindDismiss(exempt: string, close: () => void): (e: Event) => void {
+    const handler = (e: Event) => {
       if (e.type === 'keydown' && (e as KeyboardEvent).key !== 'Escape') return;
-      if (e.type === 'pointerdown' && (e.target as Element | null)?.closest('.agentbar__add')) return;
-      this.setAgentMenu(false);
-      plus?.focus();
+      if (e.type === 'pointerdown' && (e.target as Element | null)?.closest(exempt)) return;
+      close();
     };
-    this.doc.addEventListener('pointerdown', this.agentMenuDismiss);
-    this.doc.addEventListener('keydown', this.agentMenuDismiss);
+    this.doc.addEventListener('pointerdown', handler);
+    this.doc.addEventListener('keydown', handler);
+    return handler;
+  }
+
+  private unbindDismiss(handler: ((e: Event) => void) | null): void {
+    if (!handler) return;
+    this.doc.removeEventListener('pointerdown', handler);
+    this.doc.removeEventListener('keydown', handler);
+  }
+
+  /** Swap the open menu between the kind list and a kind's configured-launch form. */
+  private setAgentMenuConfig(kind: AgentKind | null): void {
+    this.agentMenuConfigKind = kind;
+    this.syncAgentMenu();
+  }
+
+  private syncAgentMenu(): void {
+    const conversationId = this.conversationId;
+    if (!conversationId) return;
+    syncAgentMenu(this.root, this.doc, this.agentBarState(conversationId), this.agentBarActions(conversationId));
   }
 
   private async addAgent(conversationId: string, kind: AgentKind): Promise<void> {
-    this.setAgentMenu(false);
-    if (!this.tmuxAvailable) {
-      window.alert(TMUX_REQUIRED);
-      return;
-    }
+    this.setAgentMenu(false); // one-click launch: dismiss immediately so rapid adds stay fluid
     const res = await this.api.addAgent(conversationId, kind);
-    if (!res.ok) {
-      window.alert(res.error ?? 'could not add agent');
-      await this.refreshAgents(conversationId);
-      return;
+    if (!res.ok) this.announce(res.error ?? 'Could not add agent.'); // admission rejection: no record, no pill
+    await this.refreshAgents(conversationId);
+  }
+
+  /** Configured launch: keep the form open with its values on failure so a filled
+   *  form is never lost, and close the menu only once the record is admitted. */
+  private async launchConfigured(conversationId: string, kind: AgentKind, config: AgentConfigInput): Promise<{ ok: boolean; error?: string }> {
+    const res = await this.api.addAgent(conversationId, kind, config);
+    if (res.ok) {
+      this.setAgentMenu(false);
+      this.announce(`${AGENT_KIND_META[kind].label} launching.`);
     }
     await this.refreshAgents(conversationId);
+    return { ok: res.ok, error: res.error };
+  }
+
+  /** Toggle the agent's details popover (closing any other); focus moves into the
+   *  panel on open, back to the trigger on close. */
+  private togglePopover(instanceId: string): void {
+    if (this.openPopoverId === instanceId) this.closePopover();
+    else this.openPopover(instanceId);
+  }
+
+  private openPopover(instanceId: string): void {
+    this.openPopoverId = instanceId;
+    this.agentPopoverDraft = null;
+    this.fillAgents();
+    const panel = this.root.querySelector<HTMLElement>('.agent__popover');
+    (panel?.querySelector<HTMLElement>('input:not([disabled]),select:not([disabled]),button:not([disabled])') ?? panel)?.focus();
+    this.unbindDismiss(this.agentPopoverDismiss);
+    // A click inside the open agent row (its trigger or panel) must not dismiss.
+    this.agentPopoverDismiss = this.bindDismiss('.agent--popover-open', () => this.closePopover());
+  }
+
+  private closePopover(): void {
+    const instanceId = this.openPopoverId;
+    if (!instanceId) return;
+    this.resetPopover();
+    this.fillAgents();
+    this.root.querySelector<HTMLElement>(`[data-agent-details="${instanceId}"]`)?.focus();
+  }
+
+  private resetPopover(): void {
+    this.openPopoverId = null;
+    this.agentPopoverDraft = null;
+    this.unbindDismiss(this.agentPopoverDismiss);
+    this.agentPopoverDismiss = null;
+  }
+
+  /** Snapshot unsaved popover input before a surgical roster rebuild, so typing
+   *  survives a refresh while the agent stays editable (and is dropped otherwise). */
+  private capturePopoverDraft(): void {
+    if (!this.openPopoverId) {
+      this.agentPopoverDraft = null;
+      return;
+    }
+    const agent = this.agents.find((a) => a.instanceId === this.openPopoverId);
+    const panel = this.root.querySelector<HTMLElement>('.agent__popover');
+    this.agentPopoverDraft = agent && panel && isAgentEditable(agent) ? readConfigDraft(panel) : null;
+  }
+
+  /** Snapshot the focused config control before a rebuild, so an SSE-driven refresh
+   *  cannot yank the caret out of the field the user is typing in. */
+  private capturePopoverFocus(): PopoverFocus | null {
+    if (!this.openPopoverId) return null;
+    const active = this.doc.activeElement;
+    const panel = this.root.querySelector<HTMLElement>('.agent__popover');
+    if (!panel || !active || !panel.contains(active)) return null;
+    const field = active.getAttribute('data-config-field');
+    if (!field) return null;
+    const input = active instanceof HTMLInputElement ? active : null;
+    return { field, selStart: input?.selectionStart ?? null, selEnd: input?.selectionEnd ?? null };
+  }
+
+  private restorePopoverFocus(focus: PopoverFocus | null): void {
+    if (!focus) return;
+    const control = this.root.querySelector<HTMLElement>(`.agent__popover [data-config-field="${focus.field}"]`);
+    if (!control) return;
+    control.focus();
+    if (focus.selStart !== null && control instanceof HTMLInputElement) {
+      control.setSelectionRange(focus.selStart, focus.selEnd ?? focus.selStart);
+    }
+  }
+
+  private async configureAgent(conversationId: string, instanceId: string, config: AgentConfigInput): Promise<{ ok: boolean; error?: string }> {
+    const res = await this.api.configureAgent(conversationId, instanceId, config);
+    if (res.ok) this.announce('Launch settings saved.');
+    await this.refreshAgents(conversationId);
+    return { ok: res.ok, error: res.error };
+  }
+
+  private copyAttach(agent: AgentDto, button: HTMLButtonElement): Promise<void> {
+    return agent.attachCommand
+      ? this.flashCopy(button, agent.attachCommand, 'Attach command copied.', 'Copy failed — select the command in the details and copy manually.')
+      : Promise.resolve();
   }
 
   /** Refetch the conversation's agents + tmux availability, then refill the roster. */
@@ -709,7 +847,11 @@ export class App {
     const host = this.agentsHost;
     const conversationId = this.conversationId;
     if (!host || !conversationId) return;
+    if (this.openPopoverId && !this.agents.some((a) => a.instanceId === this.openPopoverId)) this.resetPopover();
+    const focus = this.capturePopoverFocus();
+    this.capturePopoverDraft();
     fillAgentRoster(this.doc, host, this.agentBarState(conversationId), this.agentBarActions(conversationId));
+    this.restorePopoverFocus(focus);
   }
 
   private async runAgentBatch(conversationId: string, agents: AgentDto[], action: (agent: AgentDto) => Promise<{ ok: boolean; error?: string }>): Promise<void> {
@@ -739,15 +881,25 @@ export class App {
     }
   }
 
-  private async copyId(btn: HTMLButtonElement, id: string): Promise<void> {
+  private copyId(btn: HTMLButtonElement, id: string): Promise<void> {
+    return this.flashCopy(btn, id, 'Conversation id copied.', 'Copy failed — select the id and copy manually.');
+  }
+
+  /** Copy `text`, flash the button to a confirmation, and restore it after a beat.
+   *  Announces success, or a manual-copy fallback when the clipboard is blocked. */
+  private async flashCopy(button: HTMLButtonElement, text: string, ok: string, fail: string): Promise<void> {
     try {
-      await navigator.clipboard.writeText(id);
-      btn.textContent = '✓ Copied';
-      this.announce('Conversation id copied.');
-      window.setTimeout(() => (btn.textContent = `⧉ ${id}`), 1200);
+      await navigator.clipboard.writeText(text);
     } catch {
-      this.announce('Copy failed — select the id and copy manually.');
+      this.announce(fail);
+      return;
     }
+    // Restore to the button's idle label, not whatever it shows now: a second click
+    // inside the 1200ms window would otherwise capture "✓ Copied" and stick there.
+    const idle = (button.dataset.flashIdle ??= button.textContent ?? '');
+    button.textContent = '✓ Copied';
+    this.announce(ok);
+    window.setTimeout(() => { if (button.isConnected) button.textContent = idle; }, 1200);
   }
 
   private renderEvent(event: EventDTO): HTMLElement {
@@ -1008,16 +1160,10 @@ function lastTwoSegments(path: string): string {
   return parts.slice(-2).join('/') || path;
 }
 
+/** Both sides come from the same `toDto` serialization, so key order is stable and
+ *  a JSON comparison covers every field without a list that can fall out of date. */
 function sameAgents(a: AgentDto[], b: AgentDto[]): boolean {
-  return a.length === b.length && a.every((agent, i) => {
-    const other = b[i];
-    return other !== undefined &&
-      agent.instanceId === other.instanceId &&
-      agent.kind === other.kind &&
-      agent.name === other.name &&
-      agent.status === other.status &&
-      agent.resumable === other.resumable;
-  });
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 const shortTime = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });

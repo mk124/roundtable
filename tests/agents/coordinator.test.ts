@@ -27,7 +27,7 @@ class FakeStore {
 class FakeSupervisor {
   live = new Set<string>();
 
-  name(convId: string, instanceId: string, kind: AgentKind = 'claude') {
+  sessionName(convId: string, instanceId: string, kind: AgentKind = 'claude') {
     return agentSessionName('local', kind, convId, instanceId);
   }
 
@@ -42,7 +42,7 @@ class FakeSupervisor {
   releaseCapture(): void {}
 
   async launch(spec: { convId: string; instanceId: string; kind: AgentKind; sessionId?: string }): Promise<{ started: boolean; sessionId: string | null }> {
-    this.live.add(this.name(spec.convId, spec.instanceId, spec.kind));
+    this.live.add(this.sessionName(spec.convId, spec.instanceId, spec.kind));
     return { started: true, sessionId: spec.sessionId ?? null };
   }
 

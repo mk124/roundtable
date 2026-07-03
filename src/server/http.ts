@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { stripTypeScriptTypes } from 'node:module';
 import type { ConversationMetadata, ProjectMetadata, RoundtableEvent } from '../types.ts';
-import { type AgentDto, type AgentKind, isAgentKind } from '../agents/record.ts';
+import { type AgentConfigInput, type AgentDto, type AgentKind, isAgentKind } from '../agents/record.ts';
 import { renderMarkdown } from './render.ts';
 import { cspHeader } from './security.ts';
 import type { RedactingLogger } from './logging.ts';
@@ -53,7 +53,8 @@ export interface RoundtableApp {
   subscribeProjects(client: SseClient): Promise<() => void>;
   subscribe(conversationId: string, client: SseClient, lastEventId: number): Promise<(() => void) | null>;
   listAgents(conversationId: string): Promise<{ tmuxAvailable: boolean; agents: AgentDto[] } | null>;
-  addAgent(conversationId: string, kind: AgentKind): Promise<{ ok: true; agent: AgentDto } | { ok: false; error: string; status: 400 | 404 | 429 | 503 }>;
+  addAgent(conversationId: string, kind: AgentKind, config?: AgentConfigInput): Promise<{ ok: true; agent: AgentDto } | { ok: false; error: string; status: 400 | 404 | 429 | 503 }>;
+  configureAgent(conversationId: string, instanceId: string, config: AgentConfigInput): Promise<{ ok: boolean; error?: string; status?: 400 | 404 | 429 | 503 }>;
   resumeAgent(conversationId: string, instanceId: string): Promise<{ ok: boolean; error?: string; status?: 400 | 404 | 429 | 503 }>;
   stopAgent(conversationId: string, instanceId: string): Promise<{ ok: boolean; error?: string; status?: 404 | 503 }>;
   removeAgent(conversationId: string, instanceId: string): Promise<{ ok: boolean; error?: string; status?: 404 | 503 }>;
@@ -195,8 +196,13 @@ export function createServer(deps: ServerDeps): http.Server {
           const body = await readJson(req);
           if (!body.ok) return json(res, body.status, { error: body.error });
           if (!isAgentKind(body.value.kind)) return json(res, 400, { error: 'unknown agent kind' });
-          const result = await deps.app.addAgent(id, body.value.kind);
+          const result = await deps.app.addAgent(id, body.value.kind, agentConfig(body.value));
           return result.ok ? json(res, 200, { agent: result.agent }) : json(res, result.status, { error: result.error });
+        } else if (instanceId && req.method === 'PATCH' && !sub) {
+          const body = await readJson(req);
+          if (!body.ok) return json(res, body.status, { error: body.error });
+          const result = await deps.app.configureAgent(id, instanceId, agentConfig(body.value));
+          return agentMutationResult(res, result);
         } else if (instanceId && req.method === 'DELETE' && !sub) {
           const result = await deps.app.removeAgent(id, instanceId);
           return agentMutationResult(res, result);
@@ -337,6 +343,16 @@ function sayIdentity(body: Record<string, unknown>): SayIdentity {
   const model = String(body.model ?? '');
   const name = body.name == null ? '' : String(body.name);
   return name.trim() ? { model, name } : { model };
+}
+
+/** Extract the launch overrides from a create/edit body; the coordinator is the
+ *  single validator. Present keys map to a string or `null` (clear); absent = unchanged. */
+function agentConfig(body: Record<string, unknown>): AgentConfigInput {
+  const config: AgentConfigInput = {};
+  for (const field of ['model', 'effort', 'permissionMode', 'approvalPolicy'] as const) {
+    if (field in body) config[field] = body[field] == null ? null : String(body[field]);
+  }
+  return config;
 }
 
 // HTTP helpers

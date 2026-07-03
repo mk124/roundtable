@@ -13,7 +13,20 @@
  */
 import { shortId } from '../ids.ts';
 import type { ConversationStore } from '../conversations/store.ts';
-import { type AgentDto, type AgentKind, type AgentRecord, type AgentStatus } from './record.ts';
+import {
+  isApprovalPolicyFor,
+  isEffortFor,
+  isPermissionModeFor,
+  isSafeAgentModel,
+  type AgentApprovalPolicy,
+  type AgentConfigInput,
+  type AgentDto,
+  type AgentEffort,
+  type AgentKind,
+  type AgentPermissionMode,
+  type AgentRecord,
+  type AgentStatus,
+} from './record.ts';
 import { parseAgentSessionName } from './session-name.ts';
 import { newSessionId } from './session-capture.ts';
 import type { AgentSupervisor, LaunchResult } from './supervisor.ts';
@@ -44,7 +57,8 @@ type AddResult =
 
 type ManageAgentResult = { ok: boolean; error?: string; status?: 400 | 404 | 429 | 503 };
 type ClosedResult = { ok: false; error: string; status: 503 };
-type SpawnSpec = { instanceId: string; kind: AgentKind; name: string; mode: 'new' | 'resume'; sessionId?: string; spawnId: number; cwd: string };
+type LaunchConfig = { model?: string; effort?: AgentEffort; permissionMode?: AgentPermissionMode; approvalPolicy?: AgentApprovalPolicy };
+type SpawnSpec = { instanceId: string; kind: AgentKind; name: string; mode: 'new' | 'resume'; sessionId?: string; spawnId: number; cwd: string } & LaunchConfig;
 type FinalizeSpec = Pick<SpawnSpec, 'instanceId' | 'kind' | 'mode' | 'spawnId'>;
 
 const NAME_PREFIX: Record<AgentKind, string> = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity' };
@@ -52,6 +66,7 @@ const DEFAULT_GRACE_MS = 300_000;
 export const STOP_UNCONFIRMED = 'agent stop could not be confirmed';
 const SHUTTING_DOWN = 'server is shutting down';
 const CORRUPT_AGENTS = 'agent records are corrupt';
+const INVALID_CONFIG = 'invalid agent configuration';
 
 export class AgentCoordinator {
   private readonly d: CoordinatorDeps;
@@ -74,8 +89,9 @@ export class AgentCoordinator {
   async list(convId: string, tmuxAvailable?: boolean): Promise<AgentDto[] | null> {
     const available = tmuxAvailable ?? (await this.d.supervisor.available());
     const sessions = available ? await this.d.supervisor.liveSessions(convId) : null;
-    const records = await this.syncWithLive(convId, sessions && (liveByConversation(sessions).get(convId) ?? new Set()));
-    return records?.map(toDto) ?? null;
+    const live = sessions && (liveByConversation(sessions).get(convId) ?? new Set<string>());
+    const records = await this.syncWithLive(convId, live);
+    return records?.map((rec) => this.toDto(convId, rec, live)) ?? null;
   }
 
   /** List many conversations against a single tmux snapshot, so a sidebar listing
@@ -83,23 +99,29 @@ export class AgentCoordinator {
    *  An id that no longer resolves yields no agents. */
   async listMany(convIds: string[]): Promise<Map<string, AgentDto[]>> {
     const sessions = (await this.d.supervisor.available()) ? await this.d.supervisor.liveSessions() : null;
-    const live = sessions && liveByConversation(sessions);
+    const byConv = sessions && liveByConversation(sessions);
     const entries = await Promise.all(convIds.map(async (convId) => {
-      const records = await this.syncWithLive(convId, live && (live.get(convId) ?? new Set()));
-      return [convId, records?.map(toDto) ?? []] as const;
+      const live = byConv && (byConv.get(convId) ?? new Set<string>());
+      const records = await this.syncWithLive(convId, live);
+      return [convId, records?.map((rec) => this.toDto(convId, rec, live)) ?? []] as const;
     }));
     return new Map(entries);
   }
 
   /** Add a new agent: persist `starting`, then launch and finalize in the background. */
-  async add(convId: string, kind: AgentKind): Promise<AddResult> {
-    return this.trackOperation(() => this.addImpl(convId, kind));
+  async add(convId: string, kind: AgentKind, config?: AgentConfigInput): Promise<AddResult> {
+    return this.trackOperation(() => this.addImpl(convId, kind, config));
   }
 
-  private async addImpl(convId: string, kind: AgentKind): Promise<AddResult> {
+  private async addImpl(convId: string, kind: AgentKind, config?: AgentConfigInput): Promise<AddResult> {
     if (this.closed) return closedResult();
     if (!(await this.d.agentContextFor(convId))) return { ok: false, error: 'unknown conversation', status: 404 };
     if (!(await this.d.supervisor.available())) return { ok: false, error: 'tmux is not available', status: 503 };
+
+    // Validate before reserving a capture slot, so a direct service caller cannot
+    // burn a slot (or persist a record) with values the HTTP route would reject.
+    const launch = resolveConfig(kind, {}, config ?? {});
+    if (launch === null) return { ok: false, error: INVALID_CONFIG, status: 400 };
 
     const instanceId = shortId();
     const sessionId = newSessionId(kind) ?? undefined;
@@ -124,7 +146,7 @@ export class AgentCoordinator {
         if (records === null) return { outcome: 'corrupt' };
         if (records.length >= this.cap) return { outcome: 'full' };
         const id = ++this.spawnCounter;
-        const record: AgentRecord = { kind, instanceId, name, createdAt: new Date().toISOString(), status: 'starting' };
+        const record: AgentRecord = { kind, instanceId, name, createdAt: new Date().toISOString(), status: 'starting', ...launch };
         if (sessionId) record.sessionId = sessionId;
         await ctx.store.writeAgents(convId, [...records, record]);
         this.changed(convId);
@@ -154,8 +176,8 @@ export class AgentCoordinator {
       this.d.supervisor.releaseCapture(convId, instanceId);
       return closedResult();
     }
-    this.launchInBackground(convId, { instanceId, kind, name, mode: 'new', sessionId, spawnId: prepared.spawnId, cwd: prepared.cwd });
-    return { ok: true, agent: toDto(prepared.record) };
+    this.launchInBackground(convId, { instanceId, kind, name, mode: 'new', sessionId, spawnId: prepared.spawnId, cwd: prepared.cwd, ...launch });
+    return { ok: true, agent: this.toDto(convId, prepared.record, null) };
   }
 
   /** Resume a stopped record: persist `starting`, then launch and finalize in the background. */
@@ -221,8 +243,37 @@ export class AgentCoordinator {
       sessionId: prepared.rec.sessionId,
       spawnId: prepared.spawnId,
       cwd: prepared.cwd,
+      model: prepared.rec.model,
+      effort: prepared.rec.effort,
+      permissionMode: prepared.rec.permissionMode,
+      approvalPolicy: prepared.rec.approvalPolicy,
     });
     return { ok: true };
+  }
+
+  /** Edit a stopped/errored agent's launch overrides; applies on the next resume.
+   *  Runs under the conversation lock, so it can never race a spawn's finalize. */
+  async configure(convId: string, instanceId: string, config: AgentConfigInput): Promise<ManageAgentResult> {
+    return this.trackOperation(() => this.configureImpl(convId, instanceId, config));
+  }
+
+  private async configureImpl(convId: string, instanceId: string, config: AgentConfigInput): Promise<ManageAgentResult> {
+    if (this.closed) return closedResult();
+    const store = await this.d.storeFor(convId);
+    if (!store) return { ok: false, error: 'unknown conversation', status: 404 };
+    return this.d.lock(convId, async () => {
+      if (this.closed) return closedResult();
+      const records = await this.readWritableAgents(store, convId);
+      if (records === null) return { ok: false, error: CORRUPT_AGENTS, status: 503 };
+      const rec = records.find((r) => r.instanceId === instanceId);
+      if (!rec) return { ok: false, error: 'unknown agent', status: 404 };
+      if (this.inflight.has(key(convId, instanceId)) || !isEditable(rec)) return { ok: false, error: 'agent is not editable', status: 400 };
+      const resolved = resolveConfig(rec.kind, rec, config);
+      if (resolved === null) return { ok: false, error: INVALID_CONFIG, status: 400 };
+      await store.writeAgents(convId, records.map((r) => (r.instanceId === instanceId ? applyConfig(r, resolved) : r)));
+      this.changed(convId);
+      return { ok: true };
+    });
   }
 
   /** Stop a running agent: kill its session, keep the record as `stopped`. */
@@ -374,7 +425,12 @@ export class AgentCoordinator {
       }
       if (launch.stopFailed) this.reportStopFailure(convId, s.instanceId);
       const next: AgentStatus = launch.started ? 'running' : this.closed || s.mode === 'resume' ? 'stopped' : 'errored';
-      await store.writeAgents(convId, records.map((r) => (r.instanceId === s.instanceId ? { ...r, status: next, sessionId: launch.sessionId ?? r.sessionId } : r)));
+      const updated: AgentRecord = { ...rec, status: next, sessionId: launch.sessionId ?? rec.sessionId };
+      // The marker reflects only the latest attempt: cleared on start, set when a
+      // configured launch never started.
+      delete updated.launchError;
+      if (!launch.started && isConfigured(rec)) updated.launchError = 'configured-launch-failed';
+      await store.writeAgents(convId, records.map((r) => (r.instanceId === s.instanceId ? updated : r)));
       this.changed(convId);
     });
   }
@@ -508,14 +564,65 @@ export class AgentCoordinator {
   private changed(convId: string): void {
     this.d.onChange?.(convId);
   }
-}
 
-function toDto(rec: AgentRecord): AgentDto {
-  return { instanceId: rec.instanceId, kind: rec.kind, name: rec.name, status: rec.status, resumable: canResume(rec) };
+  /** Map a record to its DTO. The attach command ships only when the session is in
+   *  `live` (null = tmux unavailable): `starting` alone does not mean attachable. */
+  private toDto(convId: string, rec: AgentRecord, live: ReadonlySet<string> | null): AgentDto {
+    const dto: AgentDto = { instanceId: rec.instanceId, kind: rec.kind, name: rec.name, status: rec.status, resumable: canResume(rec), createdAt: rec.createdAt };
+    if (rec.sessionId) dto.sessionId = rec.sessionId;
+    if (rec.model) dto.model = rec.model;
+    if (rec.effort) dto.effort = rec.effort;
+    if (rec.permissionMode) dto.permissionMode = rec.permissionMode;
+    if (rec.approvalPolicy) dto.approvalPolicy = rec.approvalPolicy;
+    if (rec.launchError) dto.launchError = rec.launchError;
+    if (live?.has(rec.instanceId)) dto.attachCommand = `tmux attach -t ${this.d.supervisor.sessionName(convId, rec.instanceId, rec.kind)}`;
+    return dto;
+  }
 }
 
 function canResume(rec: AgentRecord): boolean {
   return rec.status === 'errored' || (rec.status === 'stopped' && Boolean(rec.sessionId));
+}
+
+/** `configure` window: stopped or errored; in-flight spawns are checked separately. */
+function isEditable(rec: AgentRecord): boolean {
+  return rec.status === 'stopped' || rec.status === 'errored';
+}
+
+function isConfigured(rec: AgentRecord): boolean {
+  return Boolean(rec.model || rec.effort || rec.permissionMode || rec.approvalPolicy);
+}
+
+const INVALID = Symbol('invalid');
+
+/** Merge a raw input over a base: `undefined` keeps the base, `null`/`''` clears,
+ *  anything else must validate for the kind (else null). Create and edit share
+ *  this path, so a value create accepts can never be rejected on edit. */
+function resolveConfig(kind: AgentKind, base: LaunchConfig, input: AgentConfigInput): LaunchConfig | null {
+  const model = applyField(input.model, base.model, (v): v is string => isSafeAgentModel(v));
+  const effort = applyField(input.effort, base.effort, (v): v is AgentEffort => isEffortFor(kind, v));
+  const permissionMode = applyField(input.permissionMode, base.permissionMode, (v): v is AgentPermissionMode => isPermissionModeFor(kind, v));
+  const approvalPolicy = applyField(input.approvalPolicy, base.approvalPolicy, (v): v is AgentApprovalPolicy => isApprovalPolicyFor(kind, v));
+  if (model === INVALID || effort === INVALID || permissionMode === INVALID || approvalPolicy === INVALID) return null;
+  const out: LaunchConfig = {};
+  if (model !== undefined) out.model = model;
+  if (effort !== undefined) out.effort = effort;
+  if (permissionMode !== undefined) out.permissionMode = permissionMode;
+  if (approvalPolicy !== undefined) out.approvalPolicy = approvalPolicy;
+  return out;
+}
+
+function applyField<T extends string>(input: string | null | undefined, base: T | undefined, valid: (v: string) => v is T): T | undefined | typeof INVALID {
+  if (input === undefined) return base;
+  if (input === null || input === '') return undefined;
+  return valid(input) ? input : INVALID;
+}
+
+/** Rewrite the record's overrides to exactly `config`; dropped fields return to the
+ *  CLI default. */
+function applyConfig(rec: AgentRecord, config: LaunchConfig): AgentRecord {
+  const { model, effort, permissionMode, approvalPolicy, ...rest } = rec;
+  return { ...rest, ...config };
 }
 
 function closedResult(): ClosedResult {

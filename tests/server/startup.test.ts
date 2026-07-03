@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RoundtableService } from '../../src/server/startup.ts';
 import type { SseClient } from '../../src/server/sse.ts';
 import type { SizeLimits } from '../../src/types.ts';
+import type { AgentKind } from '../../src/agents/record.ts';
 
 const tempHome = () => mkdtemp(join(tmpdir(), 'rt-svc-'));
 const tempProjectPath = () => mkdtemp(join(tmpdir(), 'rt-proj-'));
@@ -115,6 +116,15 @@ async function waitForAgentStatus(service: RoundtableService, convId: string, in
   assert.fail(`agent ${instanceId} did not reach ${status}`);
 }
 
+async function newSessionCommands(logPath: string): Promise<string[]> {
+  const commands: string[] = [];
+  for (const line of (await readFile(logPath, 'utf8')).split('\n').filter(Boolean)) {
+    const args = JSON.parse(line) as string[];
+    if (args[0] === 'new-session') commands.push(args[args.length - 1]!);
+  }
+  return commands;
+}
+
 test('createConversation requires a known project and writes nothing on failure', async () => {
   const { service } = await withProject();
   const bad = await service.createConversation('deadbeefdeadbeef', 'orphan');
@@ -174,6 +184,47 @@ test('agent lifecycle changes notify project list subscribers', async () => {
     if (added.ok) await waitForAgentStatus(service, conv.id, added.agent.instanceId, 'running');
     unsubscribe();
     assert.equal(frames.some((frame) => frame.includes('event: projects')), true);
+  });
+});
+
+test('invalid create parameters are rejected with 400 and never start a session', async () => {
+  await withFakeTmux(async (logPath) => {
+    const { service, projectId } = await withProject();
+    const conv = await makeConversation(service, projectId, 'invalid create');
+    const cases: Array<[AgentKind, { model?: string; effort?: string; permissionMode?: string; approvalPolicy?: string }]> = [
+      ['claude', { model: 'bad model!' }],
+      ['codex', { effort: 'max' }], // max is a claude effort, not codex
+      ['antigravity', { effort: 'low' }], // antigravity has no effort control
+      ['claude', { permissionMode: 'nope' }],
+      ['claude', { approvalPolicy: 'never' }], // approval policy is codex-only
+      ['codex', { approvalPolicy: 'bogus' }],
+    ];
+    for (const [kind, config] of cases) {
+      const res = await service.addAgent(conv.id, kind, config);
+      assert.equal(res.ok, false);
+      assert.equal(res.ok === false && res.status, 400);
+    }
+    assert.equal((await service.listAgents(conv.id))?.agents.length, 0);
+    assert.deepEqual(await newSessionCommands(logPath), []);
+  });
+});
+
+test('listAgents exposes ids and an attach command only while the session is live', async () => {
+  await withFakeTmux(async () => {
+    const { service, projectId } = await withProject();
+    const conv = await makeConversation(service, projectId, 'dto');
+    const added = await service.addAgent(conv.id, 'claude');
+    const id = added.ok ? added.agent.instanceId : '';
+    await waitForAgentStatus(service, conv.id, id, 'running');
+
+    const live = (await service.listAgents(conv.id))!.agents.find((a) => a.instanceId === id)!;
+    assert.ok(live.createdAt);
+    assert.ok(live.sessionId); // claude mints its id at launch
+    assert.match(live.attachCommand!, /^tmux attach -t roundtable-/);
+
+    await service.stopAgent(conv.id, id);
+    const stopped = (await service.listAgents(conv.id))!.agents.find((a) => a.instanceId === id)!;
+    assert.equal(stopped.attachCommand, undefined); // session gone → not attachable, though the record remains
   });
 });
 

@@ -18,7 +18,7 @@ import { buildCommand } from './commands.ts';
 import { agentSessionInScope, agentSessionName } from './session-name.ts';
 import { prepareTrustedWorkspace, type TrustPreparer } from './trust.ts';
 import { sessionDir, sessionIdFromFile } from './session-capture.ts';
-import type { AgentKind } from './record.ts';
+import type { AgentApprovalPolicy, AgentEffort, AgentKind, AgentPermissionMode } from './record.ts';
 
 const DEFAULT_CAPTURE_TIMEOUT_MS = 60_000;
 const DEFAULT_TMUX_TIMEOUT_MS = 5_000;
@@ -63,6 +63,11 @@ export interface LaunchSpec {
   roundtablePath: string;
   /** Runtime base URL for the local server. */
   baseUrl: string;
+  /** Launch overrides injected as per-kind CLI flags; absent = the CLI's default. */
+  model?: string;
+  effort?: AgentEffort;
+  permissionMode?: AgentPermissionMode;
+  approvalPolicy?: AgentApprovalPolicy;
 }
 
 export interface LaunchResult {
@@ -227,6 +232,10 @@ export class AgentSupervisor {
       baseUrl: spec.baseUrl,
       name: spec.name,
       sessionId: spec.sessionId,
+      model: spec.model,
+      effort: spec.effort,
+      permissionMode: spec.permissionMode,
+      approvalPolicy: spec.approvalPolicy,
     });
     command[0] = await this.resolveCommand(command[0]!);
     if (controller.signal.aborted) return { started: false, sessionId: null };

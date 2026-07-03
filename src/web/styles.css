@@ -388,23 +388,124 @@ textarea {
 .menu--open {
   display: flex;
 }
+.menu--config {
+  min-width: 240px;
+  gap: 8px;
+  padding: 8px;
+}
+.menu__row {
+  display: flex;
+  align-items: stretch;
+  border-left: 3px solid transparent;
+  border-radius: 6px;
+}
+.menu__row:hover {
+  background: var(--surface-2);
+}
+.menu__row.accent-claude { border-left-color: var(--agent-claude); }
+.menu__row.accent-gpt { border-left-color: var(--agent-gpt); }
+.menu__row.accent-gemini { border-left-color: var(--agent-gemini); }
 .menu__item {
+  flex: 1;
   text-align: left;
   font-size: 13px;
   color: var(--text);
   background: none;
   border: none;
-  border-left: 3px solid transparent;
   border-radius: 6px;
   padding: 6px 10px;
   cursor: pointer;
 }
-.menu__item:hover {
-  background: var(--surface-2);
+.menu__options {
+  flex: none;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
 }
-.menu__item.accent-claude { border-left-color: var(--agent-claude); }
-.menu__item.accent-gpt { border-left-color: var(--agent-gpt); }
-.menu__item.accent-gemini { border-left-color: var(--agent-gemini); }
+.menu__options:hover { color: var(--text); }
+.menu__heading {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0 2px;
+}
+.agent-config {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-config__row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.agent-config__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.agent-config__control {
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 9px;
+}
+/* Model is a free-text field with datalist suggestions, not a select. Drop the
+   browser's fake-looking datalist arrow; suggestions still surface while typing. */
+.agent-config__control[list]::-webkit-calendar-picker-indicator { display: none; }
+.agent-config__control:hover:not(:disabled) { border-color: var(--muted); }
+.agent-config__control:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.agent-config__control:disabled {
+  color: var(--muted);
+  background: transparent;
+  cursor: default;
+}
+.agent-config__error {
+  font-size: 12px;
+  color: var(--danger);
+  line-height: 1.4;
+}
+.agent-config__error:empty { display: none; }
+.agent-config__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.agent-config__btn {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.agent-config__btn:hover:not(:disabled) {
+  border-color: var(--muted);
+  background: var(--nav-hover);
+}
+.agent-config__btn:disabled { opacity: 0.5; cursor: default; }
+.agent-config__btn--primary {
+  color: var(--accent-text);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.agent-config__btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  background: var(--accent);
+}
 
 .agentbar__roster {
   display: flex;
@@ -413,6 +514,7 @@ textarea {
   flex-wrap: wrap;
 }
 .agent {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -466,6 +568,142 @@ textarea {
 }
 .agent__remove:hover:not(:disabled) { color: var(--danger); }
 .agent__remove:disabled { opacity: 0.5; cursor: default; }
+.agent__approval {
+  color: var(--warn);
+  font-size: 11px;
+}
+/* The pill body doubles as the details trigger; it carries no button chrome so
+   the surrounding .agent pill reads as one clickable unit. */
+.agent__open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.agent:has(.agent__open:hover) { border-color: var(--muted); }
+.agent__open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 999px; }
+
+.agent__popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 300px;
+  padding: 14px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.35), 0 2px 8px -3px rgba(0, 0, 0, 0.25);
+}
+.agent__popover:focus { outline: none; }
+
+.agent-popover__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.agent-popover__id {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.agent-popover__name {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.agent-popover__kind {
+  font-size: 11px;
+  color: var(--muted);
+}
+.agent-popover__status {
+  flex: none;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 9px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.agent-popover__status--running {
+  color: var(--agent-gpt);
+  background: color-mix(in srgb, var(--agent-gpt) 14%, transparent);
+  border-color: color-mix(in srgb, var(--agent-gpt) 40%, transparent);
+}
+.agent-popover__status--errored {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+.agent-popover__status--starting { color: var(--warn); }
+
+.agent-popover__meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 14px;
+  margin: 0;
+  padding: 11px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.agent-popover__key {
+  font-weight: 600;
+  color: var(--muted);
+}
+.agent-popover__val {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.agent-popover__mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.agent-popover__pending {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.agent-popover__cue {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+.agent-popover__cue-icon { flex: none; }
+.agent-popover__cue--warn { color: var(--warn); background: var(--warn-bg); }
+.agent-popover__cue--error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.agent-popover__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.agent-config__hint {
+  font-size: 11px;
+  color: var(--muted);
+}
 
 .chat__log {
   flex: 1;

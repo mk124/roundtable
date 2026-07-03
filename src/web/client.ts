@@ -1,8 +1,8 @@
 import type { RenderNode } from '../server/render.ts';
 import type { ActivityEntry } from '../server/sse.ts';
-import type { AgentDto, AgentKind } from '../agents/record.ts';
+import type { AgentConfigInput, AgentDto, AgentKind } from '../agents/record.ts';
 
-export type { ActivityEntry, AgentDto, AgentKind };
+export type { ActivityEntry, AgentConfigInput, AgentDto, AgentKind };
 
 export interface EventDTO {
   id: string;
@@ -50,7 +50,8 @@ export class ConversationApi {
   };
   say = (id: string, text: string) => this.post(`/api/conversations/${id}/say`, { model: 'user', text });
   listAgents = (id: string) => this.get<{ tmuxAvailable: boolean; agents: AgentDto[] }>(`/api/conversations/${id}/agents`);
-  addAgent = (id: string, kind: AgentKind) => this.post<{ agent: AgentDto }>(`/api/conversations/${id}/agents`, { kind });
+  addAgent = (id: string, kind: AgentKind, config?: AgentConfigInput) => this.post<{ agent: AgentDto }>(`/api/conversations/${id}/agents`, { kind, ...config });
+  configureAgent = (id: string, instanceId: string, config: AgentConfigInput) => this.send('PATCH', `/api/conversations/${id}/agents/${instanceId}`, config);
   resumeAgent = (id: string, instanceId: string) => this.post(`/api/conversations/${id}/agents/${instanceId}/resume`, {});
   stopAgent = (id: string, instanceId: string) => this.post(`/api/conversations/${id}/agents/${instanceId}/stop`, {});
   removeAgent = (id: string, instanceId: string) => this.send('DELETE', `/api/conversations/${id}/agents/${instanceId}`);

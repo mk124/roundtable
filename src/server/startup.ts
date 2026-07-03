@@ -12,7 +12,7 @@ import { RedactingLogger } from './logging.ts';
 import { SseHub, type SseClient } from './sse.ts';
 import { AgentSupervisor } from '../agents/supervisor.ts';
 import { AgentCoordinator, STOP_UNCONFIRMED } from '../agents/coordinator.ts';
-import type { AgentDto, AgentKind } from '../agents/record.ts';
+import type { AgentConfigInput, AgentDto, AgentKind } from '../agents/record.ts';
 import { agentSessionNamespace } from '../agents/session-name.ts';
 
 const PROJECTS_FRAME = 'event: projects\ndata: {}\n\n';
@@ -289,8 +289,12 @@ export class RoundtableService implements RoundtableApp {
     return agents === null ? null : { tmuxAvailable, agents };
   }
 
-  addAgent(conversationId: string, kind: AgentKind) {
-    return this.agents.add(conversationId, kind);
+  addAgent(conversationId: string, kind: AgentKind, config?: AgentConfigInput) {
+    return this.agents.add(conversationId, kind, config);
+  }
+
+  configureAgent(conversationId: string, instanceId: string, config: AgentConfigInput) {
+    return this.agents.configure(conversationId, instanceId, config);
   }
 
   resumeAgent(conversationId: string, instanceId: string) {
