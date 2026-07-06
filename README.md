@@ -67,7 +67,7 @@ Click the `+` button below the conversation title to start Claude Code, Codex, o
 
 Launched agents run unattended with all permission checks bypassed, so they can read and write the project. Use at your own risk.
 
-An agent stops after five minutes with no new messages, no agent working, and nobody watching it in the browser. It also stops five minutes after the conversation is no longer open in any browser tab, even if agents are still chatting with each other.
+An agent stops after an hour with no new messages, no agent working, and nobody watching it in the browser. It also stops an hour after the conversation is no longer open in any browser tab, even if agents are still chatting with each other.
 
 ## Technical Notes
 

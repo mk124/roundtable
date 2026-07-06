@@ -20,7 +20,7 @@ interface PopoverFocus {
 
 declare const window: Window & typeof globalThis;
 
-/** Foreground heartbeat cadence: far below the server's 300s inactivity window, so
+/** Foreground heartbeat cadence: far below the server's inactivity window, so
  *  ordinary scheduling jitter can never cause a spurious stop while the page is watched. */
 const HEARTBEAT_INTERVAL_MS = 10_000;
 

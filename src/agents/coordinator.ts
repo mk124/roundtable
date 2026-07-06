@@ -48,7 +48,7 @@ export interface CoordinatorDeps {
   onChange?: (convId: string) => void;
   onError?: (err: unknown) => void;
   graceMs?: number;
-  /** Unattended-inactivity window; defaults to the shared 300s. Tests inject a short one. */
+  /** Unattended-inactivity window; defaults to the shared DEFAULT_STOP_MS. Tests inject a short one. */
   inactivityMs?: number;
   cap?: number;
 }
@@ -65,8 +65,8 @@ type FinalizeSpec = Pick<SpawnSpec, 'instanceId' | 'kind' | 'mode' | 'spawnId'>;
 
 const NAME_PREFIX: Record<AgentKind, string> = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity' };
 /** Both auto-stop timers — the no-watcher grace stop and the unattended-inactivity
- *  stop — reuse the same 300-second duration. */
-const DEFAULT_STOP_MS = 300_000;
+ *  stop — reuse the same 60-minute duration. */
+const DEFAULT_STOP_MS = 3_600_000;
 export const STOP_UNCONFIRMED = 'agent stop could not be confirmed';
 const SHUTTING_DOWN = 'server is shutting down';
 const CORRUPT_AGENTS = 'agent records are corrupt';
@@ -483,7 +483,7 @@ export class AgentCoordinator {
   }
 
   // Unattended-inactivity stop: independent of watcher count, it stops a
-  // conversation's live agents once 300s pass with no successful message, no
+  // conversation's live agents once the window elapses with no successful message, no
   // live-agent presence, and no accepted foreground-view heartbeat.
 
   /** Launch/resume/reconcile entry: begin the window, but never overwrite an active
@@ -495,7 +495,7 @@ export class AgentCoordinator {
   }
 
   /** Begin or reset the inactivity window for a conversation with live agents;
-   *  replaces any prior timer so a fresh 300s starts now. The timer's own identity
+   *  replaces any prior timer so a fresh window starts now. The timer's own identity
    *  marks it current: a fire that no longer matches the map entry was superseded. */
   private armInactivity(convId: string): void {
     if (this.closed) return;
