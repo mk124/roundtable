@@ -221,7 +221,7 @@ export class RoundtableService implements RoundtableApp {
       await ctx.store.update(conversationId, { lastActivityAt: new Date().toISOString() }).catch(() => {});
       ctx.sse.publish(cursor, { cursor }); // clients refetch the view on any bump
       this.applyPresence(conversationId, ctx.sse, author, null); // posting a message ends that author's presence
-      this.agents.noteActivity(conversationId); // R1: a durable message resets the inactivity window (paused presence excepted)
+      this.agents.noteActivity(conversationId); // a durable message resets the inactivity window (paused presence excepted)
       return { ok: true as const, cursor };
     });
   }
@@ -239,7 +239,7 @@ export class RoundtableService implements RoundtableApp {
 
   /** Apply a presence change and, only when it crosses the empty/non-empty boundary,
    *  notify the coordinator: non-empty pauses the inactivity stop, clearing the last
-   *  entry starts a fresh window (R6/R7); state changes in-between are no-ops. The
+   *  entry starts a fresh window; state changes in-between are no-ops. The
    *  coordinator ignores this unless the conversation has live agents. */
   private applyPresence(conversationId: string, sse: SseHub, author: string, state: string | null): void {
     const had = sse.activitySnapshot().length > 0;
@@ -260,7 +260,7 @@ export class RoundtableService implements RoundtableApp {
     return this.contexts.get(conversationId)?.sse.activitySnapshot() ?? [];
   }
 
-  /** R8: a foreground-view heartbeat from the browser resets the inactivity window.
+  /** A foreground-view heartbeat from the browser resets the inactivity window.
    *  Like getActivity this skips the mutate queue to keep a frequent poll cheap —
    *  noteActivity only resets an existing window, so racing a teardown is harmless.
    *  Returns false for an unknown id. */

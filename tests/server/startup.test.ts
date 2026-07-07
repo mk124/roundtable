@@ -249,7 +249,7 @@ test('successful messages keep a browser-launched agent alive; rejected ones do 
     }
     assert.equal(await agentStatus(service, conv.id, id), 'running'); // repeated messages kept it alive
 
-    // R10: only size-rejected says now arrive, so the window is not extended and the agent stops.
+    // Only size-rejected says now arrive, so the window is not extended and the agent stops.
     const oversized = 'x'.repeat(5_000);
     for (let i = 0; i < 40 && (await agentStatus(service, conv.id, id)) !== 'stopped'; i += 1) {
       assert.equal((await service.say(conv.id, { model: 'user' }, oversized)).ok, false);
@@ -307,7 +307,7 @@ test('an open SSE subscription without heartbeats does not keep an agent alive a
     assert.ok(unsubscribe);
 
     await waitForAgentStatus(service, conv.id, id, 'stopped');
-    assert.equal((await service.view(conv.id))?.events.length, 0); // R5: automatic stop appends no system message
+    assert.equal((await service.view(conv.id))?.events.length, 0); // automatic stop appends no system message
     unsubscribe!();
   });
 });

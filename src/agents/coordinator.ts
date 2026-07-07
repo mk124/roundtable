@@ -339,7 +339,7 @@ export class AgentCoordinator {
         await store.writeAgents(convId, next);
         this.changed(convId);
       }
-      if (next.some((rec) => rec.status === 'running')) this.startInactivity(convId); // R2: adopt a still-running session
+      if (next.some((rec) => rec.status === 'running')) this.startInactivity(convId); // adopt a still-running session
       return { convId, unreadable: false, known: next.map((rec) => key(convId, rec.instanceId)) };
     })));
     const known = new Set(reconciled.flatMap((result) => result.known));
@@ -447,7 +447,7 @@ export class AgentCoordinator {
       // configured launch never started.
       delete updated.launchError;
       if (!launch.started && isConfigured(rec)) updated.launchError = 'configured-launch-failed';
-      // R2: a live agent starts the inactivity window. Armed before the record is
+      // A live agent starts the inactivity window. Armed before the record is
       // published so anything that observes `running` finds the window in place.
       if (next === 'running') this.startInactivity(convId);
       await store.writeAgents(convId, records.map((r) => (r.instanceId === s.instanceId ? updated : r)));
